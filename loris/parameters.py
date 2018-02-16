@@ -8,12 +8,14 @@ The attributes of this class should make it possible to work with most imaging
 libraries without any further need to process the IIIF syntax.
 '''
 
+from __future__ import absolute_import
+
 import re
 from decimal import Decimal
 from math import floor
 from logging import getLogger
-from loris_exception import SyntaxException
-from loris_exception import RequestException
+
+from loris.loris_exception import RequestException, SyntaxException
 
 logger = getLogger(__name__)
 
@@ -66,7 +68,7 @@ class RegionParameter(object):
 
         self.mode = RegionParameter._mode_from_region_segment(self.uri_value, self.img_info)
 
-        logger.debug('Region mode is "%s" (from "%s")' % (self.mode,uri_value))
+        logger.debug('Region mode is "%s" (from "%s")', self.mode, uri_value)
 
         if self.mode == FULL_MODE:
             self._populate_slots_for_full()
@@ -78,14 +80,14 @@ class RegionParameter(object):
         else: # self.mode == PCT_MODE:
             self._populate_slots_from_pct()
 
-        logger.debug('decimal_x: %s' % (str(self.decimal_x),))
-        logger.debug('pixel_x: %d' % (self.pixel_x,))
-        logger.debug('decimal_y: %s' % (str(self.decimal_y),))
-        logger.debug('pixel_y: %d' % (self.pixel_y,))
-        logger.debug('decimal_w: %s' % (str(self.decimal_w),))
-        logger.debug('pixel_w: %d' % (self.pixel_w,))
-        logger.debug('decimal_h: %s' % (str(self.decimal_h),))
-        logger.debug('pixel_h: %d' % (self.pixel_h,))
+        logger.debug('decimal_x: %s', self.decimal_x)
+        logger.debug('pixel_x: %d', self.pixel_x)
+        logger.debug('decimal_y: %s', self.decimal_y)
+        logger.debug('pixel_y: %d', self.pixel_y)
+        logger.debug('decimal_w: %s', self.decimal_w)
+        logger.debug('pixel_w: %d', self.pixel_w)
+        logger.debug('decimal_h: %s', self.decimal_h)
+        logger.debug('pixel_h: %d', self.pixel_h)
 
         self._canonicalize()
 
@@ -99,32 +101,36 @@ class RegionParameter(object):
             self.canonical_uri_value = ','.join(map(str, px))
         else:
             self.canonical_uri_value = FULL_MODE
-        logger.debug('canonical uri_value for region %s' % (self.canonical_uri_value,))
+        logger.debug('canonical uri_value for region %s', self.canonical_uri_value)
 
     def _adjust_to_in_bounds(self):
         if (self.decimal_x + self.decimal_w) > DECIMAL_ONE:
             self.decimal_w = DECIMAL_ONE - self.decimal_x
             self.pixel_w = self.img_info.width - self.pixel_x
-            logger.info('decimal_w adjusted to: %s' % (str(self.decimal_w)),)
-            logger.info('pixel_w adjusted to: %d' % (self.pixel_w,))
+            logger.info('decimal_w adjusted to: %s', self.decimal_w)
+            logger.info('pixel_w adjusted to: %d', self.pixel_w)
         if (self.decimal_y + self.decimal_h) > DECIMAL_ONE:
             self.decimal_h = DECIMAL_ONE - self.decimal_y
             self.pixel_h = self.img_info.height - self.pixel_y
-            logger.info('decimal_h adjusted to: %s' % (str(self.decimal_h)),)
-            logger.debug('pixel_h adjusted to: %s' % (str(self.pixel_h)),)
+            logger.info('decimal_h adjusted to: %s', self.decimal_h)
+            logger.debug('pixel_h adjusted to: %s', self.pixel_h)
 
     def _check_for_oob_errors(self):
         if any(axis < 0 for axis in (self.pixel_x, self.pixel_y)):
-            msg = 'x and y region parameters must be 0 or greater (%s)' % (self.uri_value,)
-            raise RequestException(http_status=400, message=msg)
+            raise RequestException(
+                "x and y region parameters must be 0 or greater (%s)." %
+                self.uri_value
+            )
         if self.decimal_x >= DECIMAL_ONE:
-            msg = 'Region x parameter is greater than the width of the image.\n'
-            msg +='Image width is %d' % (self.img_info.width,)
-            raise RequestException(http_status=400, message=msg)
+            raise RequestException(
+                "Region x parameter is greater than the width of the image. "
+                "Image width is %d" % self.img_info.width
+            )
         if self.decimal_y >= DECIMAL_ONE:
-            msg = 'Region y parameter is greater than the height of the image.\n'
-            msg +='Image height is %d' % (self.img_info.height,)
-            raise RequestException(http_status=400, message=msg)
+            raise RequestException(
+                "Region y parameter is greater than the height of the image. "
+                "Image height is %d" % self.img_info.height
+            )
 
     def _populate_slots_for_full(self):
         self.canonical_uri_value = FULL_MODE
@@ -147,14 +153,15 @@ class RegionParameter(object):
         dimensions = map(float, self.uri_value.split(':')[1].split(','))
 
         if len(dimensions) != 4:
-            msg = 'Exactly (4) coordinates must be supplied'
-            raise SyntaxException(http_status=400, message=msg)
+            raise SyntaxException("Exactly (4) coordinates must be supplied.")
         if any(n > 100.0 for n in dimensions):
-            msg = 'Region percentages must be less than or equal to 100.'
-            raise RequestException(http_status=400, message=msg)
+            raise RequestException(
+                "Region percentages must be less than or equal to 100."
+            )
         if any((n <= 0) for n in dimensions[2:]):
-            msg = 'Width and Height Percentages must be greater than 0.'
-            raise RequestException(http_status=400, message=msg)
+            raise RequestException(
+                "Width and Height Percentages must be greater than 0."
+            )
 
         # decimals
         self.decimal_x, self.decimal_y, self.decimal_w, \
@@ -183,11 +190,9 @@ class RegionParameter(object):
     def _pixel_dims_to_ints(self):
         dimensions = map(int, self.uri_value.split(','))
         if any(n <= 0 for n in dimensions[2:]):
-            msg = 'Width and height must be greater than 0'
-            raise RequestException(http_status=400, message=msg)
+            raise RequestException("Width and height must be greater than 0.")
         if len(dimensions) != 4:
-            msg = 'Exactly (4) coordinates must be supplied'
-            raise SyntaxException(http_status=400, message=msg)
+            raise SyntaxException("Exactly (4) coordinates must be supplied.")
         return dimensions
 
     def _populate_slots_from_pixels(self, dimensions):
@@ -230,8 +235,9 @@ class RegionParameter(object):
             elif region_segment.split(':')[0] == 'pct':
                 return PCT_MODE
             else:
-                msg = 'Region syntax "%s" is not valid' % (region_segment,)
-                raise SyntaxException(http_status=400, message=msg)
+                raise SyntaxException(
+                    "Region syntax %r is not valid." % region_segment
+                )
 
     @staticmethod
     def _pct_to_decimal(n):
@@ -254,6 +260,11 @@ class SizeParameter(object):
         h (int):
             The height.
     '''
+    PCT_MODE_REGEX = re.compile(r'^pct:(?P<percentage>[0-9]+)$')
+    PIXEL_MODE_REGEX = re.compile(
+        r'^(?P<best_fit>!?)(?P<width>[0-9]*),(?P<height>[0-9]*)$'
+    )
+
     __slots__ = ('uri_value','canonical_uri_value','mode','force_aspect','w','h')
 
     def __init__(self, uri_value, region_parameter):
@@ -271,7 +282,7 @@ class SizeParameter(object):
         '''
         self.uri_value = uri_value
         self.mode = SizeParameter.__mode_from_size_segment(self.uri_value)
-        logger.debug('Size mode is "%s" (from "%s")' % (self.mode,uri_value))
+        logger.debug('Size mode is "%s" (from "%s")', self.mode, uri_value)
 
         if self.mode == FULL_MODE:
             self.force_aspect = False
@@ -279,35 +290,39 @@ class SizeParameter(object):
             self.h = region_parameter.pixel_h
             self.canonical_uri_value = FULL_MODE
         else:
-            try:
-                if self.mode == PCT_MODE:
-                    self._populate_slots_from_pct(region_parameter)
-                else: # self.mode == PIXEL_MODE:
-                    self._populate_slots_from_pixels(region_parameter)
-            except (SyntaxException, RequestException):
-                raise
+            if self.mode == PCT_MODE:
+                self._populate_slots_from_pct(region_parameter)
+            elif self.mode == PIXEL_MODE:
+                self._populate_slots_from_pixels(region_parameter)
+            else:  # pragma: no cover
+                assert False, "Unrecognised mode: %r" % self.mode
 
             if self.force_aspect:
                 self.canonical_uri_value = '%d,%d' % (self.w,self.h)
             else:
                 self.canonical_uri_value = '%d,' % (self.w,)
 
-            logger.debug('canonical uri_value for size: %s' % (self.canonical_uri_value,))
+            logger.debug('canonical uri_value for size: %s', self.canonical_uri_value)
             logger.debug('w %s', self.w)
             logger.debug('h %s', self.h)
             if any((dim <= 0 and dim != None) for dim in (self.w, self.h)):
-                msg = 'Width and height must both be positive numbers'
-                raise RequestException(http_status=400, message=msg)
+                raise RequestException(
+                    "Width and height must both be positive numbers."
+                )
 
     def _populate_slots_from_pct(self,region_parameter):
+        m = SizeParameter.PCT_MODE_REGEX.match(self.uri_value)
+        assert m is not None
+
         self.force_aspect = False
-        pct_decimal = Decimal(str(self.uri_value.split(':')[1])) * Decimal('0.01')
+        pct_decimal = Decimal(m.group('percentage')) * Decimal('0.01')
         logger.debug(pct_decimal <= Decimal(0))
         logger.debug('pct_decimal: %s', pct_decimal)
 
         if pct_decimal <= Decimal('0'):
-            msg = 'Percentage supplied is less than 0 (%s).' % (self.uri_value,)
-            raise RequestException(http_status=400, message=msg)
+            raise RequestException(
+                "Percentage supplied is less than 0 (%r)." % self.uri_value
+            )
 
         w_decimal = region_parameter.pixel_w * pct_decimal
         h_decimal = region_parameter.pixel_h * pct_decimal
@@ -323,34 +338,42 @@ class SizeParameter(object):
         else:
             self.h = int(h_decimal)
 
-    def _populate_slots_from_pixels(self,region_parameter):
+    def _populate_slots_from_pixels(self, region_parameter):
+        m = SizeParameter.PIXEL_MODE_REGEX.match(self.uri_value)
+        assert m is not None
 
-        if self.uri_value.endswith(','):
+        best_fit = bool(m.group('best_fit'))
+        request_w = m.group('width')
+        request_h = m.group('height')
+
+        if (not best_fit) and request_w and (not request_h):
             self.force_aspect = False
-            self.w = int(self.uri_value[:-1])
-            reduce_by = Decimal(str(self.w)) / region_parameter.pixel_w
+            self.w = request_w
+            reduce_by = Decimal(request_w) / region_parameter.pixel_w
             self.h = region_parameter.pixel_h * reduce_by
 
-        elif self.uri_value.startswith(','):
+        elif (not best_fit) and (not request_w) and request_h:
             self.force_aspect = False
-            self.h = int(self.uri_value[1:])
-            reduce_by = Decimal(str(self.h)) / region_parameter.pixel_h
+            self.h = request_h
+            reduce_by = Decimal(request_h) / region_parameter.pixel_h
             self.w = region_parameter.pixel_w * reduce_by
 
-        elif self.uri_value[0] == '!':
+        elif best_fit and request_w and request_h:
             self.force_aspect = False
 
-            request_w, request_h = map(int, self.uri_value[1:].split(','))
-
-            ratio_w = Decimal(str(request_w)) / region_parameter.pixel_w
-            ratio_h = Decimal(str(request_h)) / region_parameter.pixel_h
+            ratio_w = Decimal(request_w) / region_parameter.pixel_w
+            ratio_h = Decimal(request_h) / region_parameter.pixel_h
             ratio = min(ratio_w, ratio_h)
-            self.w = int(region_parameter.pixel_w * ratio)
-            self.h = int(region_parameter.pixel_h * ratio)
+            self.w = region_parameter.pixel_w * ratio
+            self.h = region_parameter.pixel_h * ratio
 
-        else:
+        elif request_w and request_h:
             self.force_aspect = True
-            self.w, self.h = map(int, self.uri_value.split(','))
+            self.w = request_w
+            self.h = request_h
+
+        else:  # pragma: no cover
+            assert False, "Incomplete size data in URI: %r" % self.uri_value
 
         if self.h < 1:
             self.h = 1
@@ -373,64 +396,81 @@ class SizeParameter(object):
         Raises:
             SyntaxException if this can't be determined.
         '''
-        # TODO: wish this were cleaner.
-        if size_segment.split(':')[0] == 'pct':
-            return PCT_MODE
-        elif size_segment == 'full':
+        if size_segment == 'full':
             return FULL_MODE
-        elif not ',' in size_segment:
-            msg = 'Size syntax "%s" is not valid' % (size_segment,)
-            raise SyntaxException(http_status=400, message=msg)
-        elif all([(n.isdigit() or n == '') for n in size_segment.split(',')]):
-            return PIXEL_MODE
-        elif all([n.isdigit() for n in size_segment[1:].split(',')]) and \
-            len(size_segment.split(',')) == 2:
-            return PIXEL_MODE
-        else:
-            msg = 'Size syntax "%s" is not valid' % (size_segment,)
-            raise SyntaxException(http_status=400, message=msg)
+
+        if SizeParameter.PCT_MODE_REGEX.match(size_segment):
+            return PCT_MODE
+
+        m = SizeParameter.PIXEL_MODE_REGEX.match(size_segment)
+        if m is not None:
+            # In best fit mode, we need both width and height to be specified.
+            # Otherwise, we need at least one of width or height.
+            if (
+                (m.group('best_fit') and m.group('width') and m.group('height')) or
+                (not m.group('best_fit') and (m.group('width') or m.group('height')))
+            ):
+                return PIXEL_MODE
+
+        raise SyntaxException("Size syntax %r is not valid." % size_segment)
 
     def __str__(self):
         return self.uri_value
 
+
 class RotationParameter(object):
     '''Internal representation of the rotation slice of an IIIF image URI.
 
+    See http://iiif.io/api/image/2.0/#rotation:
+
+       The rotation parameter specifies mirroring and rotation. A leading
+       exclamation mark ("!") indicates that the image should be mirrored by
+       reflection on the vertical axis before any rotation is applied.
+       The numerical value represents the number of degrees of clockwise
+       rotation, and may be any floating point number from 0 to 360.
+
     Slots:
-        uri_value (str)
         canonical_uri_value (str)
-        mirror (str)
+        mirror (bool)
         rotation (str)
     '''
-    ROTATION_REGEX = re.compile('^!?[\d.]+$')
+    ROTATION_REGEX = re.compile(r'^(?P<mirror>!?)(?P<rotation>[\d.]+)$')
 
-    __slots__ = ('uri_value','canonical_uri_value','mirror','rotation')
+    __slots__ = ('canonical_uri_value', 'mirror', 'rotation')
 
     def __init__(self, uri_value):
-        '''Take the uri value and round it to the nearest 90.
+        '''Take the uri value, and parse out mirror and rotation values.
         Args:
             uri_value (str): the rotation slice of the request URI.
         Raises:
             SyntaxException:
-                If the argument is not a digit, is < 0, or > 360
+                If the argument is not a valid rotation slice.
         '''
 
-        if not RotationParameter.ROTATION_REGEX.match(uri_value):
-            msg = 'Rotation "%s" is not a number'  % (uri_value,)
-            raise SyntaxException(http_status=400, message=msg)
+        match = RotationParameter.ROTATION_REGEX.match(uri_value)
 
-        if uri_value[0] == '!':
-            self.mirror = True
-            self.rotation = uri_value[1:]
-            self.canonical_uri_value = '!%g' % (float(uri_value[1:]),)
-        else:
-            self.mirror = False
-            self.rotation = uri_value
-            self.canonical_uri_value = '%g' % (float(uri_value),)
+        if not match:
+            raise SyntaxException(
+                "Rotation parameter %r is not a number" % uri_value
+            )
+
+        self.mirror = bool(match.group('mirror'))
+        self.rotation = match.group('rotation')
+
+        try:
+            self.canonical_uri_value = '%g' % (float(self.rotation),)
+        except ValueError:
+            raise SyntaxException(
+                "Rotation parameter %r is not a floating point number." %
+                uri_value
+            )
+
+        if self.mirror:
+            self.canonical_uri_value = '!%s' % self.canonical_uri_value
 
         if not 0.0 <= float(self.rotation) <= 360.0:
-            msg = 'Rotation argument "%s" is not between 0 and 360' % (uri_value,)
-            raise SyntaxException(http_status=400, message=msg)
+            raise SyntaxException(
+                "Rotation parameter %r is not between 0 and 360." % uri_value
+            )
 
-
-        logger.debug('canonical rotation is %s' % (self.canonical_uri_value,))
+        logger.debug('Canonical rotation parameter is %s', self.canonical_uri_value)

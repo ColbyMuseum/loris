@@ -5,36 +5,45 @@ webapp.py
 =========
 Implements IIIF 2.0 <http://iiif.io/api/image/2.0/> level 2
 '''
+from __future__ import absolute_import
+
 from datetime import datetime
 from decimal import getcontext
 import logging
 from logging.handlers import RotatingFileHandler
 import os
-from os import path, makedirs, unlink
-import random
+from os import path, unlink
 import re
-import string
 from subprocess import CalledProcessError
-from urllib import unquote, quote_plus
+from tempfile import NamedTemporaryFile
+try:
+    from urllib.parse import unquote, quote_plus
+except ImportError:  # Python 2
+    from urllib import unquote, quote_plus
 
-#3rd party imports
+import sys
+sys.path.append('.')
+
 from configobj import ConfigObj
 from werkzeug.http import parse_date, http_date
-from werkzeug.wrappers import Request, Response, BaseResponse, CommonResponseDescriptorsMixin
 
-#Loris imports
-import constants
-import img
-from img_info import ImageInfo
-from img_info import ImageInfoException
-from img_info import InfoCache
-from loris_exception import LorisException
-from loris_exception import RequestException
-from loris_exception import SyntaxException
-from loris_exception import ImageException
-from loris_exception import ResolverException
-from loris_exception import TransformException
-import transforms
+from werkzeug.wrappers import (
+    Request, Response, BaseResponse, CommonResponseDescriptorsMixin
+)
+
+from loris import constants, img, transforms
+from loris.img_info import InfoCache
+from loris.loris_exception import (
+    ConfigError,
+    ImageException,
+    ImageInfoException,
+    RequestException,
+    ResolverException,
+    SyntaxException,
+    TransformException,
+)
+
+
 
 getcontext().prec = 25 # Decimal precision. This should be plenty.
 
@@ -58,39 +67,31 @@ def get_debug_config(debug_jp2_transformer):
     config['resolver']['impl'] = 'loris.resolver.SimpleFSResolver'
     config['resolver']['src_img_root'] = path.join(project_dp,'tests','img')
     if debug_jp2_transformer == 'opj':
-        from transforms import OPJ_JP2Transformer
+        from loris.transforms import OPJ_JP2Transformer
+        config['transforms']['jp2']['impl'] = 'OPJ_JP2Transformer'
         opj_decompress = OPJ_JP2Transformer.local_opj_decompress_path()
         config['transforms']['jp2']['opj_decompress'] = path.join(project_dp, opj_decompress)
         libopenjp2_dir = OPJ_JP2Transformer.local_libopenjp2_dir()
         config['transforms']['jp2']['opj_libs'] = path.join(project_dp, libopenjp2_dir)
-    else: # kdu
-        from transforms import KakaduJP2Transformer
+    elif debug_jp2_transformer == 'kdu':
+        from loris.transforms import KakaduJP2Transformer
+        config['transforms']['jp2']['impl'] = 'KakaduJP2Transformer'
         kdu_expand = KakaduJP2Transformer.local_kdu_expand_path()
         config['transforms']['jp2']['kdu_expand'] = path.join(project_dp, kdu_expand)
         libkdu_dir = KakaduJP2Transformer.local_libkdu_dir()
         config['transforms']['jp2']['kdu_libs'] = path.join(project_dp, libkdu_dir)
+    else:
+        raise ConfigError('Unrecognized debug JP2 transformer: %r' % debug_jp2_transformer)
+
+    config['authorizer'] = {'impl': 'loris.authorizer.RulesAuthorizer'}
+    config['authorizer']['cookie_secret'] = "4rakTQJDyhaYgoew802q78pNnsXR7ClvbYtAF1YC87o="
+    config['authorizer']['token_secret'] = "hyQijpEEe9z1OB9NOkHvmSA4lC1B4lu1n80bKNx0Uz0="
+    config['authorizer']['roles_key'] = 'roles'
+    config['authorizer']['id_key'] = 'sub'
+
+
 
     return config
-
-
-def make_directories(config):
-    dirs_to_make = []
-    try:
-        dirs_to_make.append(config['loris.Loris']['tmp_dp'])
-        if config['logging']['log_to'] == 'file':
-            dirs_to_make.append(config['logging']['log_dir'])
-        if config['loris.Loris']['enable_caching']:
-            dirs_to_make.append(config['img.ImageCache']['cache_dp'])
-            dirs_to_make.append(config['img_info.InfoCache']['cache_dp'])
-        [makedirs(d) for d in dirs_to_make if not path.exists(d)]
-    except OSError as ose:
-        from sys import exit
-        from os import strerror
-        # presumably it's permissions
-        msg = '%s (%s)' % (strerror(ose.errno),ose.filename)
-        logger.fatal(msg)
-        logger.fatal('Exiting')
-        exit(77)
 
 
 def create_app(debug=False, debug_jp2_transformer='kdu', config_file_path=''):
@@ -108,25 +109,56 @@ def read_config(config_file_path):
     # interpolating their values into other keys
     # make a copy of the os.environ dictionary so that the config object can't
     # inadvertently modify the environment
-    config['DEFAULT'] = dict(os.environ)
+    config['DEFAULT'] = {key: val for(key, val) in os.environ.items() if key not in ('PS1')}
     return config
 
 
-def _configure_logging(config):
+def _validate_logging_config(config):
+    """
+    Validate the logging config before setting up a logger.
+    """
+    mandatory_keys = ['log_to', 'log_level', 'format']
+    missing_keys = [key for key in mandatory_keys if key not in config]
+
+    if missing_keys:
+        raise ConfigError(
+            'Missing mandatory logging parameters: %r' %
+            ','.join(missing_keys)
+        )
+
+    if config['log_to'] not in ('file', 'console'):
+        raise ConfigError(
+            'logging.log_to=%r, expected one of file/console' % config['log_to']
+        )
+
+    if config['log_to'] == 'file':
+        mandatory_keys = ['log_dir', 'max_size', 'max_backups']
+        missing_keys = []
+        for key in mandatory_keys:
+            if key not in config:
+                missing_keys.append(key)
+
+        if missing_keys:
+            raise ConfigError(
+                'When log_to=file, the following parameters are required: %r' %
+                ','.join(missing_keys)
+            )
+
+
+def configure_logging(config):
+    _validate_logging_config(config)
+
     logger = logging.getLogger()
 
-    conf_level = config['log_level']
-
-    if conf_level == 'CRITICAL': logger.setLevel(logging.CRITICAL)
-    elif conf_level == 'ERROR': logger.setLevel(logging.ERROR)
-    elif conf_level == 'WARNING': logger.setLevel(logging.WARNING)
-    elif conf_level == 'INFO': logger.setLevel(logging.INFO)
-    else: logger.setLevel(logging.DEBUG)
+    try:
+        logger.setLevel(config['log_level'])
+    except ValueError:
+        logger.setLevel(logging.DEBUG)
 
     formatter = logging.Formatter(fmt=config['format'])
 
-    if config['log_to'] == 'file':
-        if not getattr(logger, 'handler_set', None):
+    if not getattr(logger, 'handler_set', None):
+        if config['log_to'] == 'file':
             fp = '%s.log' % (path.join(config['log_dir'], 'loris'),)
             handler = RotatingFileHandler(fp,
                 maxBytes=config['max_size'],
@@ -134,8 +166,7 @@ def _configure_logging(config):
                 delay=True)
             handler.setFormatter(formatter)
             logger.addHandler(handler)
-    else:
-        if not getattr(logger, 'handler_set', None):
+        elif config['log_to'] == 'console':
             from sys import __stderr__, __stdout__
             # STDERR
             err_handler = logging.StreamHandler(__stderr__)
@@ -148,8 +179,11 @@ def _configure_logging(config):
             out_handler.addFilter(StdOutFilter())
             out_handler.setFormatter(formatter)
             logger.addHandler(out_handler)
+        else:
+            # This should be protected by ``_validate_logging_config()``.
+            assert False, "Should not be reachable"
 
-            logger.handler_set = True
+        logger.handler_set = True
     return logger
 
 
@@ -182,6 +216,8 @@ class LorisResponse(BaseResponse, CommonResponseDescriptorsMixin):
                 self.headers['Access-Control-Allow-Origin'] = request.url_root
         else:
             self.headers['Access-Control-Allow-Origin'] = "*"
+        self.headers['Access-Control-Allow-Methods'] = "GET, OPTIONS"
+        self.headers['Access-Control-Allow-Headers'] = "Authorization"
 
 
 class BadRequestResponse(LorisResponse):
@@ -207,7 +243,7 @@ class ServerSideErrorResponse(LorisResponse):
 
 class LorisRequest(object):
 
-    def __init__(self, request, redirect_id_slash_to_info, proxy_path):
+    def __init__(self, request, redirect_id_slash_to_info=True, proxy_path=None):
         #make sure path is unquoted, so we know what we're working with
         self._path = unquote(request.path)
         self._request = request
@@ -280,9 +316,9 @@ class Loris(object):
                 file.
         '''
         self.app_configs = app_configs
-        self.logger = _configure_logging(app_configs['logging'])
+        self.logger = configure_logging(app_configs['logging'])
         self.logger.debug('Loris initialized with these settings:')
-        [self.logger.debug('%s.%s=%s' % (key, sub_key, self.app_configs[key][sub_key]))
+        [self.logger.debug('%s.%s=%s', key, sub_key, self.app_configs[key][sub_key])
             for key in self.app_configs for sub_key in self.app_configs[key]]
 
         # make the loris.Loris configs attrs for easier access
@@ -299,6 +335,7 @@ class Loris(object):
 
         self.transformers = self._load_transformers()
         self.resolver = self._load_resolver()
+        self.authorizer = self._load_authorizer()
         self.max_size_above_full = _loris_config.get('max_size_above_full', 200)
 
         if self.enable_caching:
@@ -309,9 +346,9 @@ class Loris(object):
     def _load_transformers(self):
         tforms = self.app_configs['transforms']
         source_formats = [k for k in tforms if isinstance(tforms[k], dict)]
-        self.logger.debug('Source formats: %s' % (repr(source_formats),))
+        self.logger.debug('Source formats: %r', source_formats)
         global_tranform_options = dict((k, v) for k, v in tforms.iteritems() if not isinstance(v, dict))
-        self.logger.debug('Global transform options: %s' % (repr(global_tranform_options),))
+        self.logger.debug('Global transform options: %r', global_tranform_options)
 
         transformers = {}
         for sf in source_formats:
@@ -323,7 +360,7 @@ class Loris(object):
     def _load_transformer(self, config):
         Klass = getattr(transforms, config['impl'])
         instance = Klass(config)
-        self.logger.debug('Loaded Transformer %s' % (config['impl'],))
+        self.logger.debug('Loaded Transformer %s', config['impl'])
         return instance
 
     def _load_resolver(self):
@@ -332,13 +369,21 @@ class Loris(object):
         resolver_config =  self.app_configs['resolver']
         return ResolverClass(resolver_config)
 
+    def _load_authorizer(self):
+        try:
+            impl = self.app_configs['authorizer']['impl']
+        except:
+            return None
+        AuthorizerClass = self._import_class(impl)
+        return AuthorizerClass(self.app_configs['authorizer'])
+
     def _import_class(self, qname):
         '''Imports a class AND returns it (the class, not an instance).
         '''
         module_name = '.'.join(qname.split('.')[:-1])
         class_name = qname.split('.')[-1]
         module = __import__(module_name, fromlist=[class_name])
-        self.logger.debug('Imported %s' % (qname,))
+        self.logger.debug('Imported %s', qname)
         return getattr(module, class_name)
 
     def wsgi_app(self, environ, start_response):
@@ -374,6 +419,14 @@ class Loris(object):
             return r
 
         elif request_type == 'info':
+
+            if request.method == "OPTIONS":
+                # never redirect
+                r = LorisResponse()
+                r.set_acao(request)
+                r.status_code = 200
+                return r
+
             return self.get_info(request, ident, base_uri)
 
         else: #request_type == 'image':
@@ -427,12 +480,22 @@ class Loris(object):
         r = LorisResponse()
         r.set_acao(request, self.cors_regex)
         ims_hdr = request.headers.get('If-Modified-Since')
-
         ims = parse_date(ims_hdr)
         last_mod = parse_date(http_date(last_mod)) # see note under get_img
 
+        if self.authorizer and self.authorizer.is_protected(info):
+            authed = self.authorizer.is_authorized(info, request)
+            if authed['status'] == 'deny':
+                r.status_code = 401
+                # trash If-Mod-Since to ensure no 304
+                ims = None
+            elif authed['status'] == 'redirect':
+                r.status_code = 302
+                r.location = authed['location']
+            # Otherwise we're okay
+
         if ims and ims >= last_mod:
-            self.logger.debug('Sent 304 for %s ' % (ident,))
+            self.logger.debug('Sent 304 for %s ', ident)
             r.status_code = 304
         else:
             if last_mod:
@@ -440,7 +503,7 @@ class Loris(object):
             callback = request.args.get('callback', None)
             if callback:
                 r.mimetype = 'application/javascript'
-                r.data = '%s(%s);' % (callback, info.to_json())
+                r.data = '%s(%s);' % (callback, info.to_iiif_json())
             else:
                 if request.headers.get('accept') == 'application/ld+json':
                     r.content_type = 'application/ld+json'
@@ -448,39 +511,36 @@ class Loris(object):
                     r.content_type = 'application/json'
                     l = '<http://iiif.io/api/image/2/context.json>;rel="http://www.w3.org/ns/json-ld#context";type="application/ld+json"'
                     r.headers['Link'] = '%s,%s' % (r.headers['Link'], l)
-                r.data = info.to_json()
+                r.data = info.to_iiif_json()
         return r
 
-    def _get_info(self,ident,request,base_uri,src_fp=None,src_format=None):
+    def _get_info(self,ident,request,base_uri):
         if self.enable_caching:
             in_cache = request in self.info_cache
         else:
             in_cache = False
 
-        if in_cache:
+        #Checking for src_format in ImageInfo signals that it's not old cache data:
+        #   src_format didn't used to be in the Info cache, but now it is.
+        #   If we don't see src_format, that means it's old cache data, so just
+        #   ignore it and cache new ImageInfo.
+        #   TODO: remove src_format check in Loris 4.0.
+        if in_cache and self.info_cache[request][0].src_format:
             return self.info_cache[request]
         else:
-            if not all((src_fp, src_format)):
-                # get_img can pass in src_fp, src_format because it needs them
-                # elsewhere; get_info does not.
-                src_fp, src_format = self.resolver.resolve(ident)
 
-            try:
-                formats = self.transformers[src_format].target_formats
-            except KeyError:
-                raise ImageInfoException(500, 'unknown source format')
+            info = self.resolver.resolve(self, ident, base_uri)
 
-            self.logger.debug('Format: %s' % (src_format,))
-            self.logger.debug('File Path: %s' % (src_fp,))
-            self.logger.debug('Identifier: %s' % (ident,))
-            self.logger.debug('Base URI: %s' % (base_uri,))
-
-            # get the info
-            info = ImageInfo.from_image_file(base_uri, src_fp, src_format, formats, self.max_size_above_full)
+            # Maybe inject services before caching
+            if self.authorizer and self.authorizer.is_protected(info):
+                # Call get_services to inject
+                svcs = self.authorizer.get_services_info(info)
+                if svcs and 'service' in svcs:
+                    info.service = svcs['service']
 
             # store
             if self.enable_caching:
-                self.logger.debug('ident used to store %s: %s' % (ident,ident))
+                self.logger.debug('ident used to store %s: %s', ident, ident)
                 self.info_cache[request] = info
                 # pick up the timestamp... :()
                 info,last_mod = self.info_cache[request]
@@ -489,6 +549,13 @@ class Loris(object):
 
             return (info,last_mod)
 
+    def _set_canonical_link(self, request, image_request, response):
+        if self.proxy_path:
+            root = self.proxy_path
+        else:
+            root = request.url_root
+        canonical_uri = '%s%s' % (root, image_request.canonical_request_path)
+        response.headers['Link'] = '%s,<%s>;rel="canonical"' % (response.headers['Link'], canonical_uri,)
 
     def get_img(self, request, ident, region, size, rotation, quality, target_fmt, base_uri):
         '''Get an Image.
@@ -507,12 +574,27 @@ class Loris(object):
         image_request = img.ImageRequest(ident, region, size, rotation,
                                          quality, target_fmt)
 
-        self.logger.debug('Image Request Path: %s' % (image_request.request_path,))
+        self.logger.debug('Image Request Path: %s', image_request.request_path)
 
         if self.enable_caching:
             in_cache = image_request in self.img_cache
         else:
             in_cache = False
+
+        try:
+            # We need the info to check authorization,
+            # ... still cheaper than always resolving as likely to be cached
+            info = self._get_info(ident, request, base_uri)[0]
+        except ResolverException as re:
+            return NotFoundResponse(re.message)
+
+        if self.authorizer and self.authorizer.is_protected(info):
+            authed = self.authorizer.is_authorized(info, request)
+
+            if authed['status'] != 'ok':
+                # Images don't redirect, they just deny out
+                r.status_code = 401
+                return r
 
         if in_cache:
             fp, img_last_mod = self.img_cache[image_request]
@@ -521,11 +603,11 @@ class Loris(object):
             # as when went sent it, so for an accurate comparison turn it into
             # an http date and then parse it again :-( :
             img_last_mod = parse_date(http_date(img_last_mod))
-            self.logger.debug("Time from FS (default, rounded): " + str(img_last_mod))
-            self.logger.debug("Time from IMS Header (parsed): " + str(parse_date(ims_hdr)))
+            self.logger.debug("Time from FS (default, rounded): %s", img_last_mod)
+            self.logger.debug("Time from IMS Header (parsed): %s", parse_date(ims_hdr))
             # ims_hdr = parse_date(ims_hdr) # catch parsing errors?
             if ims_hdr and parse_date(ims_hdr) >= img_last_mod:
-                self.logger.debug('Sent 304 for %s ' % (fp,))
+                self.logger.debug('Sent 304 for %s ', fp)
                 r.status_code = 304
                 return r
             else:
@@ -535,28 +617,22 @@ class Loris(object):
                 r.headers['Content-Length'] = path.getsize(fp)
                 r.response = file(fp)
 
-                # resolve the identifier
-                src_fp, src_format = self.resolver.resolve(ident)
                 # hand the Image object its info
-                info = self._get_info(ident, request, base_uri, src_fp, src_format)[0]
+                info = self._get_info(ident, request, base_uri)[0]
                 image_request.info = info
                 # we need to do the above to set the canonical link header
 
-                canonical_uri = '%s%s' % (request.url_root, image_request.canonical_request_path)
-                r.headers['Link'] = '%s,<%s>;rel="canonical"' % (r.headers['Link'], canonical_uri,)
+                self._set_canonical_link(request, image_request, r)
                 return r
         else:
             try:
-
-                # 1. Resolve the identifier
-                src_fp, src_format = self.resolver.resolve(ident)
-
-                # 2. Hand the Image object its info
-                info = self._get_info(ident, request, base_uri, src_fp, src_format)[0]
+                # 1. Get the info
+                info = self._get_info(ident, request, base_uri)[0]
+                # 2. Give the image its info
                 image_request.info = info
 
                 # 3. Check that we can make the quality requested
-                if image_request.quality not in info.profile[1]['qualities']:
+                if image_request.quality not in info.profile.description['qualities']:
                     return BadRequestResponse('"%s" quality is not available for this image' % (image_request.quality,))
 
                 # 4. Check if requested size is allowed
@@ -566,13 +642,13 @@ class Loris(object):
                 # 5. Redirect if appropriate
                 if self.redirect_canonical_image_request:
                     if not image_request.is_canonical:
-                        self.logger.debug('Attempting redirect to %s' % (image_request.canonical_request_path,))
+                        self.logger.debug('Attempting redirect to %s', image_request.canonical_request_path,)
                         r.headers['Location'] = image_request.canonical_request_path
                         r.status_code = 301
                         return r
 
                 # 6. Make an image
-                fp = self._make_image(image_request, src_fp, src_format)
+                fp = self._make_image(image_request, info.src_img_fp, info.src_format)
 
             except ResolverException as re:
                 return NotFoundResponse(re.message)
@@ -596,18 +672,17 @@ class Loris(object):
                 # used by the transformer.
                 msg = '''%s \n\nThis is likely a permissions problem, though it\'s
 possible that there was a problem with the source file
-(%s).''' % (str(e),src_fp)
+(%s).''' % (str(e),info.src_img_fp)
                 return ServerSideErrorResponse(msg)
         r.content_type = constants.FORMATS_BY_EXTENSION[target_fmt]
         r.status_code = 200
         r.last_modified = datetime.utcfromtimestamp(path.getctime(fp))
         r.headers['Content-Length'] = path.getsize(fp)
-        canonical_uri = '%s%s' % (request.url_root, image_request.canonical_request_path)
-        r.headers['Link'] = '%s,<%s>;rel="canonical"' % (r.headers['Link'], canonical_uri,)
+        self._set_canonical_link(request, image_request, r)
         r.response = file(fp)
 
         if not self.enable_caching:
-            r.call_on_close(unlink(fp))
+            r.call_on_close(lambda: unlink(fp))
 
         return r
 
@@ -620,20 +695,18 @@ possible that there was a problem with the source file
         Returns:
             (str) the fp of the new image
         '''
-        # figure out paths, make dirs
-        if self.enable_caching:
-            target_fp = self.img_cache.create_dir_and_return_file_path(image_request)
-        else:
-            # random str
-            n = ''.join(random.choice(string.ascii_lowercase) for x in range(10))
-            target_fp = '%s.%s' % (path.join(self.tmp_dp, n), image_request.format)
+        temp_file = NamedTemporaryFile(dir=self.tmp_dp, suffix='.%s' % image_request.format, delete=False)
+        temp_fp = temp_file.name
 
         transformer = self.transformers[src_format]
+        transformer.transform(src_fp, temp_fp, image_request)
 
-        transformer.transform(src_fp, target_fp, image_request)
         if self.enable_caching:
-            self.img_cache[image_request] = target_fp
-        return target_fp
+            temp_fp = self.img_cache.upsert(image_request, temp_fp)
+            # TODO: not sure how the non-canonical use case works
+            self.img_cache[image_request] = temp_fp
+
+        return temp_fp
 
 
 if __name__ == '__main__':

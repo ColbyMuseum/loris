@@ -1,54 +1,70 @@
 # webapp_t.py
 #-*- coding: utf-8 -*-
 
+from __future__ import absolute_import
+
 from datetime import datetime
 from os import path, listdir
 from time import sleep
 from unittest import TestCase
+import re
+
+import pytest
 from werkzeug.datastructures import Headers
 from werkzeug.http import http_date
 from werkzeug.test import EnvironBuilder
 from werkzeug.wrappers import Request
-import re
-import loris_t
-from loris import img_info
-from loris import webapp
-from loris import loris_exception
+
+from loris import img_info, webapp
+from loris.loris_exception import ConfigError
+from loris.transforms import KakaduJP2Transformer, OPJ_JP2Transformer
+from tests import loris_t
 
 
-"""
-Webapp tests. To run this test on its own, do:
+def _get_werkzeug_request(path):
+    builder = EnvironBuilder(path=path)
+    env = builder.get_environ()
+    return Request(env)
 
-$ python -m unittest -v tests.webapp_t
 
-from the `/loris` (not `/loris/loris`) directory.
-"""
+class TestDebugConfig(object):
+    def test_debug_config_gives_kakadu_transformer(self):
+        config = webapp.get_debug_config('kdu')
+        app = webapp.Loris(config)
+        assert isinstance(app.transformers['jp2'], KakaduJP2Transformer)
+
+    def test_debug_config_gives_openjpeg_transformer(self):
+        config = webapp.get_debug_config('opj')
+        app = webapp.Loris(config)
+        assert isinstance(app.transformers['jp2'], OPJ_JP2Transformer)
+
+    def test_unrecognized_debug_config_is_configerror(self):
+        with pytest.raises(ConfigError) as err:
+            webapp.get_debug_config('no_such_jp2_transformer')
+        assert 'Unrecognized debug JP2 transformer' in err.value.message
+
+
 class TestLorisRequest(TestCase):
 
     def setUp(self):
         self.test_jp2_color_id = '01%2F02%2F0001.jp2'
 
-    def _get_werkzeug_request(self, path):
-        builder = EnvironBuilder(path=path)
-        env = builder.get_environ()
-        return Request(env)
-
     def test_get_base_uri(self):
         path = '/%s/' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, True, None)
         self.assertEqual(loris_request.base_uri, 'http://localhost/01%2F02%2F0001.jp2')
 
     def test_get_base_uri_proxy_path(self):
         path = '/%s/' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         proxy_path = 'http://example.org/'
         loris_request = webapp.LorisRequest(req, True, proxy_path)
         self.assertEqual(loris_request.base_uri, 'http://example.org/01%2F02%2F0001.jp2')
 
     def test_root_path(self):
         path = '/'
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.ident, '')
         self.assertEqual(loris_request.params, '')
@@ -56,7 +72,7 @@ class TestLorisRequest(TestCase):
 
     def test_favicon(self):
         path = '/favicon.ico'
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.ident, '')
         self.assertEqual(loris_request.params, '')
@@ -64,7 +80,7 @@ class TestLorisRequest(TestCase):
 
     def test_unescaped_ident_request(self):
         path = '/01/02/0001.jp2/'
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, True, None)
         self.assertEqual(loris_request.ident, '01%2F02%2F0001.jp2')
         self.assertEqual(loris_request.params, '')
@@ -72,7 +88,7 @@ class TestLorisRequest(TestCase):
 
     def test_ident_request(self):
         path = '/%s/' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, True, None)
         self.assertEqual(loris_request.ident, self.test_jp2_color_id)
         self.assertEqual(loris_request.params, '')
@@ -80,14 +96,14 @@ class TestLorisRequest(TestCase):
 
     def test_ident_request_no_redirect(self):
         path = '/%s/' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.ident, self.test_jp2_color_id + '%2F')
         self.assertEqual(loris_request.request_type, 'redirect_info')
 
     def test_info_request(self):
         info_path = '/%s/info.json' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(info_path)
+        req = _get_werkzeug_request(info_path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.ident, self.test_jp2_color_id)
         self.assertEqual(loris_request.params, 'info.json')
@@ -95,7 +111,7 @@ class TestLorisRequest(TestCase):
 
     def test_img_request(self):
         path = '/%s/full/full/0/default.jpg' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.ident, self.test_jp2_color_id)
         expected_params = {'region': u'full', 'size': u'full', 'rotation': u'0', 'quality': u'default', 'format': u'jpg'}
@@ -104,79 +120,79 @@ class TestLorisRequest(TestCase):
 
     def test_img_region(self):
         path = '/%s/square/full/0/default.jpg' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, u'image')
         self.assertEqual(loris_request.params['region'], 'square')
         path = '/%s/0,0,500,500/full/0/default.jpg' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, u'image')
         self.assertEqual(loris_request.params['region'], '0,0,500,500')
         path = '/%s/pct:41.6,7.5,40,70/full/0/default.jpg' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, u'image')
         self.assertEqual(loris_request.params['region'], 'pct:41.6,7.5,40,70')
 
     def test_img_size(self):
         path = '/%s/full/full/0/default.jpg' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, u'image')
         self.assertEqual(loris_request.params['size'], 'full')
         path = '/%s/full/max/0/default.jpg' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, u'image')
         self.assertEqual(loris_request.params['size'], 'max')
         path = '/%s/full/150,/0/default.jpg' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, u'image')
         self.assertEqual(loris_request.params['size'], '150,')
         path = '/%s/full/pct:50/0/default.jpg' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, u'image')
         self.assertEqual(loris_request.params['size'], 'pct:50')
         path = '/%s/full/!225,100/0/default.jpg' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, u'image')
         self.assertEqual(loris_request.params['size'], '!225,100')
 
     def test_img_rotation(self):
         path = '/%s/full/full/0/default.jpg' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, u'image')
         self.assertEqual(loris_request.params['rotation'], '0')
         path = '/%s/full/full/22.5/default.jpg' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, u'image')
         self.assertEqual(loris_request.params['rotation'], '22.5')
         path = '/%s/full/full/!0/default.jpg' % self.test_jp2_color_id
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, u'image')
         self.assertEqual(loris_request.params['rotation'], '!0')
 
     def test_img_quality(self):
         path = '/%s/full/full/0/gray.jpg' % (self.test_jp2_color_id,)
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, 'image')
         self.assertEqual(loris_request.params['quality'], 'gray')
         path = '/%s/full/full/0/native.jpg' % (self.test_jp2_color_id,)
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, u'bad_image_request')
 
     def test_img_format(self):
         path = '/%s/full/full/0/default.jpg' % (self.test_jp2_color_id,)
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.request_type, 'image')
         self.assertEqual(loris_request.params['format'], 'jpg')
@@ -185,7 +201,7 @@ class TestLorisRequest(TestCase):
         identifier = '1/2/3/4/5/6/7/8/9/xyz'
         encoded_identifier = '1%2F2%2F3%2F4%2F5%2F6%2F7%2F8%2F9%2Fxyz'
         path = '/%s/full/full/0/default.jpg' % identifier
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.ident, encoded_identifier)
         expected_params = {'region': u'full', 'size': u'full', 'rotation': u'0', 'quality': u'default', 'format': u'jpg'}
@@ -196,7 +212,7 @@ class TestLorisRequest(TestCase):
         identifier = 'https://sample.sample/0001'
         encoded_identifier = 'https%3A%2F%2Fsample.sample%2F0001'
         path = '/%s/full/full/0/default.jpg' % identifier
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
         self.assertEqual(loris_request.ident, encoded_identifier)
         expected_params = {'region': u'full', 'size': u'full', 'rotation': u'0', 'quality': u'default', 'format': u'jpg'}
@@ -207,8 +223,24 @@ class TestLorisRequest(TestCase):
         identifier = '1/2/3/4/5/6/7/8/9/xyz'
         encoded_identifier = '1%2F2%2F3%2F4%2F5%2F6%2F7%2F8%2F9%2Fxyz'
         path = '/%s/info.json' % identifier
-        req = self._get_werkzeug_request(path)
+        req = _get_werkzeug_request(path)
         loris_request = webapp.LorisRequest(req, False, None)
+        self.assertEqual(loris_request.request_type, u'info')
+        self.assertEqual(loris_request.ident, encoded_identifier)
+
+    def test_template_delimiter_request(self):
+        identifier = u'a:foo|bar'
+        encoded_identifier = u'a%3Afoo%7Cbar'
+        #image request
+        path = u'/%s/full/full/0/default.jpg' % identifier
+        req = _get_werkzeug_request(path)
+        loris_request = webapp.LorisRequest(req)
+        self.assertEqual(loris_request.request_type, u'image')
+        self.assertEqual(loris_request.ident, encoded_identifier)
+        #info request
+        path = u'/%s/info.json' % identifier
+        req = _get_werkzeug_request(path)
+        loris_request = webapp.LorisRequest(req)
         self.assertEqual(loris_request.request_type, u'info')
         self.assertEqual(loris_request.ident, encoded_identifier)
 
@@ -217,25 +249,27 @@ class TestGetInfo(loris_t.LorisTest):
 
     def test_get_info(self):
         path = '/%s/' % self.test_jp2_color_id
-        builder = EnvironBuilder(path=path)
-        env = builder.get_environ()
-        req = Request(env)
+        req = _get_werkzeug_request(path=path)
         base_uri = 'http://example.org/01%2F02%2F0001.jp2'
         info, last_mod = self.app._get_info(self.test_jp2_color_id, req, base_uri)
         self.assertEqual(info.ident, base_uri)
 
     def test_get_info_invalid_src_format(self):
-        path = '/%s/' % self.test_jp2_color_id
-        builder = EnvironBuilder(path=path)
-        env = builder.get_environ()
-        req = Request(env)
-        base_uri = 'http://example.org/01%2F02%2F0001.jp2'
-        src_fp = 'invalid'
-        src_format = 'invalid'
-        exception = loris_exception.ImageInfoException
-        function = self.app._get_info
-        args = [self.test_jp2_color_id, req, base_uri, src_fp, src_format]
-        self.assertRaises(exception, function, *args)
+        # This functionality was factored out
+        # --azaroth42 2017-07-07
+        return None
+        #path = '/%s/' % self.test_jp2_color_id
+        #builder = EnvironBuilder(path=path)
+        #env = builder.get_environ()
+        #req = Request(env)
+        #base_uri = 'http://example.org/01%2F02%2F0001.jp2'
+        #src_fp = 'invalid'
+        #src_format = 'invalid'
+        #exception = loris_exception.ImageInfoException
+        #function = self.app._get_info
+        #args = [self.test_jp2_color_id, req, base_uri]
+        #self.assertRaises(exception, function, *args)
+
 
 
 class WebappIntegration(loris_t.LorisTest):
@@ -318,7 +352,7 @@ class WebappIntegration(loris_t.LorisTest):
         with open(tmp_fp, 'wb') as f:
             f.write(resp.data)
 
-        info = img_info.ImageInfo.from_json(tmp_fp)
+        info = img_info.ImageInfo.from_json_fp(tmp_fp)
         self.assertEqual(info.width, self.test_jp2_color_dims[0])
 
     def test_info_without_dot_json_404(self):
@@ -344,6 +378,21 @@ class WebappIntegration(loris_t.LorisTest):
         to_get = '/%s/0,0,500,600/!550,600/0/default.jpg' % (self.test_jp2_color_id,)
         resp = self.client.get(to_get, follow_redirects=False)
         self.assertEqual(resp.status_code, 200)
+
+    def test_image_proxy_path_canonical_link(self):
+        self.app.proxy_path = 'https://proxy_example.org/image/'
+        to_get = '/%s/full/full/0/default.jpg' % (self.test_jp2_color_id,)
+        resp = self.client.get(to_get, follow_redirects=False)
+        self.assertEqual(resp.status_code, 200)
+        link = '<http://iiif.io/api/image/2/level2.json>;rel="profile",<https://proxy_example.org/image/01%2F02%2F0001.jp2/full/full/0/default.jpg>;rel="canonical"'
+        self.assertEqual(resp.headers['Link'], link)
+
+    def test_image_canonical_link(self):
+        to_get = '/%s/full/full/0/default.jpg' % (self.test_jp2_color_id,)
+        resp = self.client.get(to_get, follow_redirects=False)
+        self.assertEqual(resp.status_code, 200)
+        link = '<http://iiif.io/api/image/2/level2.json>;rel="profile",<http://localhost/01%2F02%2F0001.jp2/full/full/0/default.jpg>;rel="canonical"'
+        self.assertEqual(resp.headers['Link'], link)
 
     def test_img_sends_304(self):
         to_get = '/%s/full/full/0/default.jpg' % (self.test_jp2_color_id,)
@@ -401,6 +450,19 @@ class WebappIntegration(loris_t.LorisTest):
         resp = self.client.get(to_get, headers=headers)
         self.assertEqual(resp.status_code, 304)
 
+    def test_info_with_callback_is_wrapped_correctly(self):
+        to_get = '/%s/info.json?callback=mycallback' % self.test_jpeg_id
+        resp = self.client.get(to_get)
+        assert resp.status_code == 200
+
+        assert re.match(r'^mycallback\(.*\);$', resp.data)
+
+    def test_info_as_options(self):
+        to_opt = '/%s/info.json?callback=mycallback' % self.test_jpeg_id
+        resp = self.client.options(to_opt)
+        assert resp.status_code == 200
+        assert b'Access-Control-Allow-Methods' in resp.headers
+
     def test_bad_format_returns_400(self):
         to_get = '/%s/full/full/0/default.hey' % (self.test_jp2_color_id,)
         resp = self.client.get(to_get)
@@ -431,15 +493,31 @@ class WebappIntegration(loris_t.LorisTest):
         resp = self.client.get(to_get)
         self.assertEqual(resp.status_code, 400)
 
+    def test_cleans_up_when_caching(self):
+        self.app.enable_caching = True
+        to_get = '/%s/full/full/0/default.jpg' % (self.test_jp2_color_id,)
+        # We use the response as a context manager to ensure it gets
+        # closed before the test ends.
+        with self.client.get(to_get):
+            pass
+        self._assert_tmp_has_no_files()
+
     def test_cleans_up_when_not_caching(self):
         self.app.enable_caching = False
         to_get = '/%s/full/full/0/default.jpg' % (self.test_jp2_color_id,)
-        resp = self.client.get(to_get)
+        # We use the response as a context manager to ensure it gets
+        # closed before the test ends.
+        with self.client.get(to_get):
+            pass
+        self._assert_tmp_has_no_files()
+
+    def _assert_tmp_has_no_files(self):
         # callback should delete the image before the test ends, so the tmp dir
         # should not contain any files (there may be dirs)
         tmp = self.app.tmp_dp
         any_files = any([path.isfile(path.join(tmp, n)) for n in listdir(tmp)])
-        self.assertTrue(not any_files)
+        self.assertTrue(not any_files, "There are too many files in %s: %s" % (tmp, any_files))
+
 
 
 class SizeRestriction(loris_t.LorisTest):
@@ -537,14 +615,3 @@ class SizeRestriction(loris_t.LorisTest):
         request_path = '/%s/full/pct:120/0/default.jpg' % (self.test_jpeg_id,)
         resp = self.client.get(request_path)
         self.assertEqual(resp.status_code, 200)
-
-
-def suite():
-    import unittest
-    test_suites = []
-    test_suites.append(unittest.makeSuite(TestLorisRequest, 'test'))
-    test_suites.append(unittest.makeSuite(TestGetInfo, 'test'))
-    test_suites.append(unittest.makeSuite(WebappIntegration, 'test'))
-    test_suites.append(unittest.makeSuite(SizeRestriction, 'test'))
-    test_suite = unittest.TestSuite(test_suites)
-    return test_suite

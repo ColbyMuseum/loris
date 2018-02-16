@@ -1,32 +1,47 @@
 #-*- coding: utf-8 -*-
-from loris.loris_exception import ResolverException
-from loris.resolver import (
-        _AbstractResolver,
-        SimpleHTTPResolver,
-        TemplateHTTPResolver,
-        SourceImageCachingResolver,
-        SimpleFSResolver
-    )
+
+from __future__ import absolute_import
+
+import copy
 from os.path import dirname
 from os.path import isfile
 from os.path import join
 from os.path import realpath
 from os.path import exists
 import unittest
-from urllib import unquote, quote_plus
 
-import loris_t
+try:
+    from urllib.parse import quote_plus, unquote
+except ImportError:  # Python 2
+    from urllib import quote_plus, unquote
+
+import pytest
 import responses
 
+from loris.loris_exception import ResolverException
+from loris.resolver import (
+    _AbstractResolver,
+    SimpleHTTPResolver,
+    TemplateHTTPResolver,
+    SourceImageCachingResolver,
+    SimpleFSResolver
+)
+from tests import loris_t
 
-"""
-Resolver tests. This may need to be modified if you change the resolver 
-implementation. To run this test on its own, do:
 
-$ python -m unittest tests.resolver_t
+check_options_test_cases = [
+    ({'cert': '/home/cert.pem'}, {'verify': True}),
+    ({'cert': '/home/cert.pem', 'key': '/home/key.pem'},
+     {'cert': ('/home/cert.pem', '/home/key.pem'), 'verify': True}),
+    ({'user': 'loris'}, {'verify': True}),
+    ({'user': 'loris', 'pw': 'l3mur'},
+     {'auth': ('loris', 'l3mur'), 'verify': True}),
+    ({'cert': '/home/cert.pem', 'key': '/home/key.pem', 'user': 'loris', 'pw': 'l3mur'},
+     {'cert': ('/home/cert.pem', '/home/key.pem'), 'auth': ('loris', 'l3mur'), 'verify': True}),
+    ({'ssl_check': True}, {'verify': True}),
+    ({'ssl_check': False}, {'verify': False}),
+]
 
-from the `/loris` (not `/loris/loris`) directory.
-"""
 
 class Test_AbstractResolver(unittest.TestCase):
 
@@ -40,15 +55,25 @@ class Test_AbstractResolver(unittest.TestCase):
         with self.assertRaises(ResolverException):
             _AbstractResolver(None).format_from_ident('datastream/content.master')
 
+    def test_is_resolvable_is_notimplementederror(self):
+        resolver = _AbstractResolver(None)
+        with pytest.raises(NotImplementedError):
+            resolver.is_resolvable('001.jpg')
+
+    def test_resolve_is_notimplementederror(self):
+        resolver = _AbstractResolver(None)
+        with pytest.raises(NotImplementedError):
+            resolver.resolve(app=None, ident='001.jpg', base_uri='example.org')
+
 
 class Test_SimpleFSResolver(loris_t.LorisTest):
 
     def test_configured_resolver(self):
         expected_path = self.test_jp2_color_fp
-        resolved_path, fmt = self.app.resolver.resolve(self.test_jp2_color_id)
-        self.assertEqual(expected_path, resolved_path)
-        self.assertEqual(fmt, 'jp2')
-        self.assertTrue(isfile(resolved_path))
+        ii = self.app.resolver.resolve(self.app, self.test_jp2_color_id, "")
+        self.assertEqual(expected_path, ii.src_img_fp)
+        self.assertEqual(ii.src_format, 'jp2')
+        self.assertTrue(isfile(ii.src_img_fp))
 
     def test_multiple_cache_roots(self):
         config = {
@@ -56,54 +81,125 @@ class Test_SimpleFSResolver(loris_t.LorisTest):
         }
         self.app.resolver = SimpleFSResolver(config)
 
-        resolved_path, fmt = self.app.resolver.resolve(self.test_png_id)
-        self.assertEqual(self.test_png_fp2, resolved_path)
+        ii = self.app.resolver.resolve(self.app, self.test_png_id, "")
+        self.assertEqual(self.test_png_fp2, ii.src_img_fp)
 
-        resolved_path, fmt = self.app.resolver.resolve(self.test_altpng_id)
-        self.assertEqual(self.test_altpng_fp, resolved_path)
+        ii2 = self.app.resolver.resolve(self.app, self.test_altpng_id, "")
+        self.assertEqual(self.test_altpng_fp, ii2.src_img_fp)
+
+    def test_present_ident_is_resolvable(self):
+        ident = self.test_png_id
+        config = {
+            'src_img_roots' : [self.test_img_dir]
+        }
+        resolver = SimpleFSResolver(config=config)
+        assert resolver.is_resolvable(ident=ident)
+
+    def test_absent_ident_is_unresolvable(self):
+        config = {
+            'src_img_roots' : ['/var/loris/img']
+        }
+        resolver = SimpleFSResolver(config=config)
+        assert not resolver.is_resolvable(ident='doesnotexist.jpg')
 
 
 class Test_SourceImageCachingResolver(loris_t.LorisTest):
 
     def test_source_image_caching_resolver(self):
-        # First we need to change the resolver on the test instance of the 
+        # First we need to change the resolver on the test instance of the
         # application (overrides the config to use SimpleFSResolver)
         config = {
-            'source_root' : join(dirname(realpath(__file__)), 'img'), 
+            'source_root' : join(dirname(realpath(__file__)), 'img'),
             'cache_root' : self.app.img_cache.cache_root
         }
         self.app.resolver = SourceImageCachingResolver(config)
 
         # Now...
         ident = self.test_jp2_color_id
-        resolved_path, fmt = self.app.resolver.resolve(ident)
+        ii = self.app.resolver.resolve(self.app, ident, "")
         expected_path = join(self.app.img_cache.cache_root, unquote(ident))
 
-        self.assertEqual(expected_path, resolved_path)
-        self.assertEqual(fmt, 'jp2')
-        self.assertTrue(isfile(resolved_path))
+        self.assertEqual(expected_path, ii.src_img_fp)
+        self.assertEqual(ii.src_format, 'jp2')
+        self.assertTrue(isfile(ii.src_img_fp))
+
+    def test_present_ident_is_resolvable(self):
+        ident = self.test_png_id
+        config = {
+            'source_root' : join(dirname(realpath(__file__)), 'img'),
+            'cache_root' : self.app.img_cache.cache_root
+        }
+        resolver = SourceImageCachingResolver(config=config)
+        assert resolver.is_resolvable(ident=ident)
+
+    def test_absent_ident_is_unresolvable(self):
+        config = {
+            'source_root' : '/var/loris/src',
+            'cache_root' : '/var/loris/cache'
+        }
+        resolver = SourceImageCachingResolver(config=config)
+        assert not resolver.is_resolvable(ident='doesnotexist.jp2')
+
+
+@pytest.fixture
+def mock_responses():
+    with open('tests/img/01/04/0001.tif', 'rb') as f:
+        responses.add(
+            responses.GET, 'http://sample.sample/0001',
+            body=f.read(),
+            status=200,
+            content_type='image/tiff'
+        )
+
+    responses.add(
+        responses.HEAD, 'http://sample.sample/0001',
+        status=200,
+        content_type='image/tiff'
+    )
+
+    with open('tests/img/01/04/0001.tif', 'rb') as f:
+        responses.add(
+            responses.GET, 'http://sample.sample/0002',
+            body=f.read(),
+            status=200
+        )
+
+    body = (
+        'II*\x00\x0c\x00\x00\x00\x80\x00  \x0e\x00\x00\x01\x03\x00\x01\x00\x00'
+        '\x00\x01\x00\x00\x00\x01\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00'
+        '\x02\x01\x03\x00\x01\x00\x00\x00\x08\x00\x00\x00\x03\x01\x03\x00\x01'
+        '\x00\x00\x00\x05\x00\x00\x00\x06\x01\x03\x00\x01\x00\x00\x00\x03\x00'
+        '\x00\x00\x11\x01\x04\x00\x01\x00\x00\x00\x08\x00\x00\x00\x15\x01\x03'
+        '\x00\x01\x00\x00\x00\x01\x00\x00\x00\x16\x01\x03\x00\x01\x00\x00\x00'
+        '\x08\x00\x00\x00\x17\x01\x04\x00\x01\x00\x00\x00\x04\x00\x00\x00\x1a'
+        '\x01\x05\x00\x01\x00\x00\x00\xba\x00\x00\x00\x1b\x01\x05\x00\x01\x00'
+        '\x00\x00\xc2\x00\x00\x00\x1c\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00'
+        '\x00(\x01\x03\x00\x01\x00\x00\x00\x02\x00\x00\x00@\x01\x03\x00\x00'
+        '\x03\x00\x00\xca\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00H\x00\x00\x00'
+        '\x01\x00\x00\x00H\x00\x00\x00\x01\x00\x00\x00\xff`\xe6q\x19\x08\x00'
+        '\x00\x80\t\x00\x00\x80\n\x00\x00\x80\x0b\x00\x00\x80\x0c\x00\x00\x80'
+        '\r'
+    )
+
+    responses.add(
+        responses.GET, 'http://sample.sample/0003',
+        body=body,
+        status=200,
+        content_type='image/invalidformat'
+    )
+
+    responses.add(
+        responses.GET, 'http://sample.sample/DOESNOTEXIST',
+        body='Does Not Exist',
+        status=404,
+        content_type='application/html'
+    )
+
 
 class Test_SimpleHTTPResolver(loris_t.LorisTest):
 
     def _mock_urls(self):
-        responses.add(responses.GET, 'http://sample.sample/0001',
-                      body='II*\x00\x0c\x00\x00\x00\x80\x00  \x0e\x00\x00\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x01\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x02\x01\x03\x00\x01\x00\x00\x00\x08\x00\x00\x00\x03\x01\x03\x00\x01\x00\x00\x00\x05\x00\x00\x00\x06\x01\x03\x00\x01\x00\x00\x00\x03\x00\x00\x00\x11\x01\x04\x00\x01\x00\x00\x00\x08\x00\x00\x00\x15\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x16\x01\x03\x00\x01\x00\x00\x00\x08\x00\x00\x00\x17\x01\x04\x00\x01\x00\x00\x00\x04\x00\x00\x00\x1a\x01\x05\x00\x01\x00\x00\x00\xba\x00\x00\x00\x1b\x01\x05\x00\x01\x00\x00\x00\xc2\x00\x00\x00\x1c\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00(\x01\x03\x00\x01\x00\x00\x00\x02\x00\x00\x00@\x01\x03\x00\x00\x03\x00\x00\xca\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00H\x00\x00\x00\x01\x00\x00\x00H\x00\x00\x00\x01\x00\x00\x00\xff`\xe6q\x19\x08\x00\x00\x80\t\x00\x00\x80\n\x00\x00\x80\x0b\x00\x00\x80\x0c\x00\x00\x80\r',
-                      status=200,
-                      content_type='image/tiff')
-
-        responses.add(responses.GET, 'http://sample.sample/0002',
-                      body='II*\x00\x0c\x00\x00\x00\x80\x00  \x0e\x00\x00\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x01\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x02\x01\x03\x00\x01\x00\x00\x00\x08\x00\x00\x00\x03\x01\x03\x00\x01\x00\x00\x00\x05\x00\x00\x00\x06\x01\x03\x00\x01\x00\x00\x00\x03\x00\x00\x00\x11\x01\x04\x00\x01\x00\x00\x00\x08\x00\x00\x00\x15\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x16\x01\x03\x00\x01\x00\x00\x00\x08\x00\x00\x00\x17\x01\x04\x00\x01\x00\x00\x00\x04\x00\x00\x00\x1a\x01\x05\x00\x01\x00\x00\x00\xba\x00\x00\x00\x1b\x01\x05\x00\x01\x00\x00\x00\xc2\x00\x00\x00\x1c\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00(\x01\x03\x00\x01\x00\x00\x00\x02\x00\x00\x00@\x01\x03\x00\x00\x03\x00\x00\xca\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00H\x00\x00\x00\x01\x00\x00\x00H\x00\x00\x00\x01\x00\x00\x00\xff`\xe6q\x19\x08\x00\x00\x80\t\x00\x00\x80\n\x00\x00\x80\x0b\x00\x00\x80\x0c\x00\x00\x80\r',
-                      status=200)
-
-        responses.add(responses.GET, 'http://sample.sample/0003',
-                      body='II*\x00\x0c\x00\x00\x00\x80\x00  \x0e\x00\x00\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x01\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x02\x01\x03\x00\x01\x00\x00\x00\x08\x00\x00\x00\x03\x01\x03\x00\x01\x00\x00\x00\x05\x00\x00\x00\x06\x01\x03\x00\x01\x00\x00\x00\x03\x00\x00\x00\x11\x01\x04\x00\x01\x00\x00\x00\x08\x00\x00\x00\x15\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x16\x01\x03\x00\x01\x00\x00\x00\x08\x00\x00\x00\x17\x01\x04\x00\x01\x00\x00\x00\x04\x00\x00\x00\x1a\x01\x05\x00\x01\x00\x00\x00\xba\x00\x00\x00\x1b\x01\x05\x00\x01\x00\x00\x00\xc2\x00\x00\x00\x1c\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00(\x01\x03\x00\x01\x00\x00\x00\x02\x00\x00\x00@\x01\x03\x00\x00\x03\x00\x00\xca\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00H\x00\x00\x00\x01\x00\x00\x00H\x00\x00\x00\x01\x00\x00\x00\xff`\xe6q\x19\x08\x00\x00\x80\t\x00\x00\x80\n\x00\x00\x80\x0b\x00\x00\x80\x0c\x00\x00\x80\r',
-                      status=200,
-                      content_type='image/invalidformat')
-
-        responses.add(responses.GET, 'http://sample.sample/DOESNOTEXIST',
-                      body='Does Not Exist',
-                      status=404,
-                      content_type='application/html')
+        mock_responses()
 
     @responses.activate
     def test_simple_http_resolver(self):
@@ -189,10 +285,10 @@ class Test_SimpleHTTPResolver(loris_t.LorisTest):
         expected_path = join(expected_path, '032')
         expected_path = join(expected_path, 'loris_cache.tif')
 
-        resolved_path, fmt = self.app.resolver.resolve(ident)
-        self.assertEqual(expected_path, resolved_path)
-        self.assertEqual(fmt, 'tif')
-        self.assertTrue(isfile(resolved_path))
+        ii = self.app.resolver.resolve(self.app, ident, "")
+        self.assertEqual(expected_path, ii.src_img_fp)
+        self.assertEqual(ii.src_format, 'tif')
+        self.assertTrue(isfile(ii.src_img_fp))
 
         #Test with a full uri
         #Note: This seems weird but idents resolve wrong and removes a slash from //
@@ -212,26 +308,26 @@ class Test_SimpleHTTPResolver(loris_t.LorisTest):
         expected_path = join(expected_path, 'loris_cache.tif')
 
         self.assertFalse(exists(expected_path))
-        resolved_path, fmt = self.app.resolver.resolve(ident)
-        self.assertEqual(expected_path, resolved_path)
-        self.assertEqual(fmt, 'tif')
-        self.assertTrue(isfile(resolved_path))
+        ii = self.app.resolver.resolve(self.app, ident, "")
+        self.assertEqual(expected_path, ii.src_img_fp)
+        self.assertEqual(ii.src_format, 'tif')
+        self.assertTrue(isfile(ii.src_img_fp))
 
         #Test with a bad identifier
         ident = 'DOESNOTEXIST'
-        self.assertRaises(ResolverException, lambda: self.app.resolver.resolve(ident))
+        self.assertRaises(ResolverException, lambda: self.app.resolver.resolve(self.app, ident, ""))
 
         #Test with a bad url
         ident = quote_plus('http://sample.sample/DOESNOTEXIST')
-        self.assertRaises(ResolverException, lambda: self.app.resolver.resolve(ident))
+        self.assertRaises(ResolverException, lambda: self.app.resolver.resolve(self.app, ident, ""))
 
         #Test with no content-type or extension or default format
         ident = '0002'
-        self.assertRaises(ResolverException, lambda: self.app.resolver.resolve(ident))
+        self.assertRaises(ResolverException, lambda: self.app.resolver.resolve(self.app, ident, ""))
 
         #Test with invalid content-type
         ident = '0003'
-        self.assertRaises(ResolverException, lambda: self.app.resolver.resolve(ident))
+        self.assertRaises(ResolverException, lambda: self.app.resolver.resolve(self.app, ident, ""))
 
     @responses.activate
     def test_with_default_format(self):
@@ -247,68 +343,156 @@ class Test_SimpleHTTPResolver(loris_t.LorisTest):
         self.app.resolver = SimpleHTTPResolver(config)
 
         ident = '0002'
-        resolved_path, fmt = self.app.resolver.resolve(ident)
-        self.assertIsNotNone(resolved_path)
-        self.assertEqual(fmt, 'tif')
-        self.assertTrue(isfile(resolved_path))
+        ii = self.app.resolver.resolve(self.app, ident, "")
+        self.assertIsNotNone(ii.src_img_fp)
+        self.assertEqual(ii.src_format, 'tif')
+        self.assertTrue(isfile(ii.src_img_fp))
 
 
-class Test_TemplateHTTPResolver(loris_t.LorisTest):
+class TestSimpleHTTPResolver(object):
 
-    def test_template_http_resolver(self):
+    @pytest.mark.parametrize('config, expected_options',
+                             check_options_test_cases)
+    def test_request_options_self(self, config, expected_options):
+        # Uninteresting for this test, but required so we have a
+        # valid config set
+        config['cache_root'] = '/var/cache/loris'
+        config['uri_resolvable'] = True
 
-        # Test with no config
-        self.assertRaises(ResolverException,
-            lambda: TemplateHTTPResolver({}))
+        resolver = SimpleHTTPResolver(config)
+        assert resolver.request_options() == expected_options
 
-        # Test with the multiple templates
+    @responses.activate
+    @pytest.mark.parametrize('head_resolvable', [True, False])
+    @pytest.mark.parametrize('ident, expected_resolvable', [
+        ('0001', True),
+        ('0004', False),
+        ('doesnotexist.png', False),
+    ])
+    def test_is_resolvable(self, mock_responses,
+                           head_resolvable, ident, expected_resolvable):
         config = {
-            'cache_root' : self.app.img_cache.cache_root,
-            'templates': 'a,b, c, d',
-            'a': {
-                'url': 'http://mysite.com/images/%s'
-            },
-            'b': {
-                'url': 'http://mysite.com/images/%s/access/'
-            },
-            'c': {
-                'url': 'http://othersite.co/img/%s'
-            }
+            'cache_root': '/var/cache/loris',
+            'source_prefix': 'http://sample.sample/',
+            'uri_resolvable': True,
+            'head_resolvable': head_resolvable,
         }
+        resolver = SimpleHTTPResolver(config=config)
+        assert resolver.is_resolvable(ident=ident) == expected_resolvable
 
-        self.app.resolver = TemplateHTTPResolver(config)
-        self.assertEqual(self.app.resolver.cache_root, self.app.img_cache.cache_root)
-        self.assert_('a' in self.app.resolver.templates)
-        self.assert_('b' in self.app.resolver.templates)
-        self.assert_('c' in self.app.resolver.templates)
-        self.assert_('d' not in self.app.resolver.templates)
-        self.assertEqual(self.app.resolver.templates['a'],
-            config['a'])
-        self.assertEqual(self.app.resolver.templates['b'],
-            config['b'])
-        self.assertEqual(self.app.resolver.templates['c'],
-            config['c'])
-        # automatically set for simple http resolver
-        self.assertEqual(self.app.resolver.uri_resolvable, True)
-
-        # test web request uri logic
-        self.assertEqual('http://mysite.com/images/foo.jpg',
-            self.app.resolver._web_request_url('a:foo.jpg')[0])
-        self.assertEqual('http://mysite.com/images/id1/access/',
-            self.app.resolver._web_request_url('b:id1')[0])
-        self.assertEqual('http://othersite.co/img/foo:bar:baz',
-            self.app.resolver._web_request_url('c:foo:bar:baz')[0])
-        self.assertEqual(None,
-            self.app.resolver._web_request_url('unknown:id2')[0])
+    @pytest.mark.parametrize('head_resolvable', [True, False])
+    def test_non_http_rejected_as_not_resolvable(self, head_resolvable):
+        config = {
+            'cache_root': '/var/cache/loris',
+            'source_prefix': 'irc://example.irc/loris/',
+            'uri_resolvable': True,
+            'head_resolvable': head_resolvable,
+        }
+        resolver = SimpleHTTPResolver(config=config)
+        assert not resolver.is_resolvable(ident='example.png')
 
 
-def suite():
-    import unittest
-    test_suites = []
-    test_suites.append(unittest.makeSuite(Test_AbstractResolver, 'test'))
-    test_suites.append(unittest.makeSuite(Test_SimpleFSResolver, 'test'))
-    test_suites.append(unittest.makeSuite(Test_SourceImageCachingResolver, 'test'))
-    test_suites.append(unittest.makeSuite(Test_SimpleHTTPResolver, 'test'))
-    test_suites.append(unittest.makeSuite(Test_TemplateHTTPResolver, 'test'))
-    test_suite = unittest.TestSuite(test_suites)
-    return test_suite
+class Test_TemplateHTTPResolver(object):
+
+    config = {
+        'cache_root' : '/var/cache/loris',
+        'templates': 'a, b, c, d, sample',
+        'a': {
+            'url': 'http://mysite.com/images/%s'
+        },
+        'b': {
+            'url': 'http://mysite.com/images/%s/access/'
+        },
+        'c': {
+            'url': 'http://othersite.co/img/%s'
+        },
+        'sample': {
+            'url': 'http://sample.sample/%s'
+        }
+    }
+
+    def test_template_http_resolver_with_no_config_is_error(self):
+        with pytest.raises(ResolverException):
+            TemplateHTTPResolver({})
+
+    def test_parsing_template_http_resolver_config(self):
+        resolver = TemplateHTTPResolver(self.config)
+        assert resolver.cache_root == self.config['cache_root']
+
+        assert resolver.templates['a'] == self.config['a']
+        assert resolver.templates['b'] == self.config['b']
+        assert resolver.templates['c'] == self.config['c']
+        assert 'd' not in resolver.templates
+
+        # Automatically set by SimpleHTTPResolver
+        assert resolver.uri_resolvable
+
+    @pytest.mark.parametrize('ident, expected_uri', [
+        ('a:foo.jpg', 'http://mysite.com/images/foo.jpg'),
+        ('b:id1', 'http://mysite.com/images/id1/access/'),
+        ('c:foo:bar:baz', 'http://othersite.co/img/foo:bar:baz'),
+    ])
+    def test_web_request_uri_logic(self, ident, expected_uri):
+        resolver = TemplateHTTPResolver(self.config)
+        uri, _ = resolver._web_request_url(ident)
+        assert uri == expected_uri
+
+    @pytest.mark.parametrize('bad_ident', [
+        'foo',
+        'unknown:id2',
+    ])
+    def test_bad_ident_is_resolvererror(self, bad_ident):
+        resolver = TemplateHTTPResolver(self.config)
+        with pytest.raises(ResolverException) as exc:
+            resolver._web_request_url(bad_ident)
+        assert 'Bad URL request' in exc.value.message
+
+    delimited_config = {
+        'cache_root' : '/var/cache/loris',
+        'templates': 'delim1, delim2',
+        'delimiter': '|',
+        'delim1': {
+            'url': 'http://mysite.com/images/%s/access/%s'
+        },
+        'delim2': {
+            'url': 'http://anothersite.com/img/%s/files/%s/dir/%s'
+        }
+    }
+
+    @pytest.mark.parametrize('ident, expected_uri', [
+        ('delim1:foo|bar', 'http://mysite.com/images/foo/access/bar'),
+        ('delim2:red|green|blue', 'http://anothersite.com/img/red/files/green/dir/blue'),
+    ])
+    def test_using_delimiters_for_template(self, ident, expected_uri):
+        resolver = TemplateHTTPResolver(self.delimited_config)
+        uri, _ = resolver._web_request_url(ident)
+        assert uri == expected_uri
+
+    @pytest.mark.parametrize('bad_ident', [
+        'delim1:up|down|left|right',
+        'nodelim',
+    ])
+    def test_bad_delimited_ident_is_resolvererror(self, bad_ident):
+        resolver = TemplateHTTPResolver(self.delimited_config)
+        with pytest.raises(ResolverException) as exc:
+            resolver._web_request_url(bad_ident)
+        assert 'Bad URL request' in exc.value.message
+
+    @pytest.mark.parametrize('config, expected_options',
+                             check_options_test_cases)
+    def test_adding_options_to_parsed_uri(self, config, expected_options):
+        new_config = copy.deepcopy(self.config)
+        new_config['a'].update(config)
+        resolver = TemplateHTTPResolver(new_config)
+        _, options = resolver._web_request_url('a:id1.jpg')
+        assert options == expected_options
+
+    @responses.activate
+    @pytest.mark.parametrize('ident, expected_resolvable', [
+        ('sample:0001', True),
+        ('sample:0004', False),
+        ('doesnotmatchatemplate', False),
+    ])
+    def test_is_resolvable(self, mock_responses, ident, expected_resolvable):
+        resolver = TemplateHTTPResolver(self.config)
+        assert resolver.is_resolvable(ident=ident) == expected_resolvable

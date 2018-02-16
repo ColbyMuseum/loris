@@ -5,7 +5,7 @@ from grp import getgrnam
 from pwd import getpwnam
 from setuptools import setup
 from setuptools.command.install import install
-from sys import stderr, stdout, exit, version_info
+from sys import stderr, stdout, exit
 import loris
 import os
 import shutil
@@ -60,12 +60,8 @@ DEPENDENCIES = [
     ('werkzeug', '>=0.8.3', 'werkzeug'),
     ('pillow', '>=2.4.0', 'PIL'),
     ('configobj', '>=4.7.2,<=5.0.0', 'configobj'),
-    ('requests', '==2.5.1', 'requests'),
-    ('mock', '==1.0.1', 'mock'),
-    ('responses', '==0.3.0', 'responses')
+    ('requests', '>=2.12.0', 'requests'),
 ]
-if version_info[1] < 7:
-    DEPENDENCIES.append(('ordereddict','>=1.1','ordereddict'))
 
 class LorisInstallCommand(install):
     description = 'Installs Loris image server'
@@ -275,7 +271,7 @@ setup(
 #   (e.g. `crontab -e -u %(user_n)s`).
 
 #  3. Have a look at the WSGI file in %(www_dp)s. It should be fine as-is, but
-#   there's always a chance that it isn't. The first thing to try is explictly
+#   there's always a chance that it isn't. The first thing to try is explicitly
 #   adding the package to your PYTHONPATH (see commented code).
 
 #  4. Configure Apache (see doc/apache.md).

@@ -38,13 +38,13 @@ The options are fairly self-explanatory; a few pointers
 
  * `log_to`. Can be `file` or `console` If set to `console`, and you're in production behind Apache, statements will go to Apache's logs. `DEBUG` and `INFO` are mapped to stdout, the rest to stderr.
  * `log_level`. Can be `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`
+ * `format`. Format of the log entries. See [Python LogRecord attributes](http://docs.python.org/2/library/logging.html#logrecord-attributes) for options.
 
  The rest only matter if `log_to=file`:
 
  * `log_dir`. This MUST exist and be writable. `setup.py` will take care of this, but it's your responsibility if you make changes once deployed.
  * `max_size`. Is in bytes, e.g. 5242880 == 5 MB
  * `max_backups`. This many previous logs will be kept.
- * `format`. Format of the log entries. See [Python LogRecord attributes](http://docs.python.org/2/library/logging.html#logrecord-attributes) for options.
 
 ### `[resolver]`
 
@@ -54,15 +54,19 @@ Any options you add here will be passed through to the resolver you implement. F
 
 Probably safe to leave these as-is unless you care about something very specific. See the [Developer Notes](develop.md#image-transformations) for when this may not be the case. The exceptions are `kdu_expand` and `kdu_libs` in the `[transforms.jp2]` (see [Installing Dependencies](dependencies.md) step 2) or if you're not concerned about color profiles (see next).
 
-### `[transforms][[jp2]]`
- * `map_embedded_profile_to_srgb`. If set to `map_embedded_profile_to_srgb = True` and you provide a path to an sRGB color profile on your system, e.g.:
+### map_profile_to_srgb
+
+You can tell Loris to map embedded color profiles to sRGB with the following settings in your transformer:
+
 ```
 ...
-map_embedded_profile_to_srgb=True
-srgb_profile_fp=/usr/share/color/icc/colord/sRGB.icc
+map_profile_to_srgb = True
+srgb_profile_fp = /usr/share/color/icc/colord/sRGB.icc
 ```
 
-Then Loris will, as the name of the option suggests, map the color profile that is embedded in the JP2 to sRGB. To faciliate this, the Python Imaging Library has to be installed with [Little CMS](http://www.littlecms.com/) support. Instructions on how to do this are on the [Configuration page](configuration.md).
+where `srgb_profile_fp` should be a path to an sRGB color profile on your system.
+
+To use this option, you need to install Pillow/PIL with [Little CMS](http://www.littlecms.com/) support. Instructions on how to do this are on the [Configuration page](configuration.md).
 
 * * *
 

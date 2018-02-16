@@ -1,9 +1,13 @@
-from loris.resolver import SimpleHTTPResolver
-from loris.loris_exception import ResolverException
+from __future__ import absolute_import
+
 import os
 import shutil
 import unittest
+
 import responses
+
+from loris.resolver import SimpleHTTPResolver
+from loris.loris_exception import ResolverException
 
 
 class SimpleHTTPResolverTest(unittest.TestCase):
@@ -94,21 +98,15 @@ class SimpleHTTPResolverTest(unittest.TestCase):
     def test_bad_url(self):
         self.assertRaises(
                 ResolverException,
-                lambda: self.resolver.resolve(self.not_identifier_url)
+                lambda: self.resolver.resolve(None, self.not_identifier_url, "")
         )
 
     @responses.activate
     def test_does_not_exist(self):
         self.assertRaises(
                 ResolverException,
-                lambda: self.resolver.resolve(self.not_identifier)
+                lambda: self.resolver.resolve(None, self.not_identifier, "")
         )
-
-    def test_create_cache_dir(self):
-        self.assertFalse(os.path.exists(self.expected_filedir))
-        self.resolver._create_cache_dir(self.expected_filedir)
-        self.assertTrue(os.path.exists(self.expected_filedir))
-        self.resolver._create_cache_dir(self.expected_filedir)
 
     @responses.activate
     def test_cached_file_for_ident(self):
@@ -118,9 +116,9 @@ class SimpleHTTPResolverTest(unittest.TestCase):
 
     @responses.activate
     def test_resolve_001(self):
-        expected_resolved = (self.expected_filepath, self.expected_format)
-        resolved = self.resolver.resolve(self.identifier)
-        self.assertSequenceEqual(resolved, expected_resolved)
+        expected_resolved = self.expected_filepath
+        ii = self.resolver.resolve(None, self.identifier, "")
+        self.assertEqual(ii.src_img_fp, expected_resolved)
         # Make sure the file exists in the cache
         self.assertTrue(os.path.isfile(self.expected_filepath))
 
@@ -204,18 +202,3 @@ class SimpleHTTPResolverConfigTest(unittest.TestCase):
         self.assertEqual(resolver.uri_resolvable, True)
         self.assertEqual(resolver.user, None)
         self.assertEqual(resolver.pw, None)
-
-
-def suite():
-    test_suites = []
-    test_suites.append(
-            unittest.makeSuite(SimpleHTTPResolverConfigTest, 'test')
-    )
-    test_suites.append(
-            unittest.makeSuite(SimpleHTTPResolverTest, 'test')
-    )
-    return unittest.TestSuite(test_suites)
-
-
-if __name__ == '__main__':
-        unittest.main()

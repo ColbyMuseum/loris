@@ -1,5 +1,8 @@
 # constants.py
 # -*- coding: utf-8 -*-
+
+from __future__ import absolute_import
+
 import re
 
 COMPLIANCE = 'http://iiif.io/api/image/2/level2.json'
@@ -15,13 +18,13 @@ OPTIONAL_FEATURES = [
 ]
 
 __formats = (
-	('gif','image/gif'),
-	('jp2','image/jp2'),
-	('jpg','image/jpeg'),
-	('pdf','application/pdf'),
-	('png','image/png'),
-	('tif','image/tiff'),
-	('webp','image/webp'),
+    ('gif','image/gif'),
+    ('jp2','image/jp2'),
+    ('jpg','image/jpeg'),
+    ('pdf','application/pdf'),
+    ('png','image/png'),
+    ('tif','image/tiff'),
+    ('webp','image/webp'),
 )
 
 FORMATS_BY_EXTENSION = dict(__formats)
@@ -34,7 +37,7 @@ EXTENSION_MAP = {
         'tiff': 'tif',
     }
 
-_IDENT = r'(?P<ident>[\w:\-\.\%\/]+)'
+_IDENT = r'(?P<ident>[|\w:\-\*\.\%\/]+)'
 _REGION = r'(?P<region>[\w:\.\,]+)'
 _SIZE = r'(?P<size>\!?[\w:\.\,]+)'
 _ROTATION = r'(?P<rotation>\!?\d+\.?\d*)'
