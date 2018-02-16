@@ -599,70 +599,62 @@ class SourceImageCachingResolver(_AbstractResolver):
         extra = self.get_extra_info(ident, cache_fp)
         return ImageInfo(app, uri, cache_fp, format_, extra)
 
-class PreferredSuffixResolver(_AbstractResolver):
+class PreferredSuffixResolver(SourceImageCachingResolver):
     """
-    Based on SimpleFS resolver. Searches for a preferred suffix and then tries a fallback suffix.
+    Subclass of SourceImageCachingResolver that checks multiple source dirs for files with a preferred and fallback suffix.
 
-    Example:
-    Configured with pref_suffix='_pm.*', fall_suffix='_cd.*',
-    A request for identifier '2003.001_001' will:
-	- Look for a useable image for [src_img_roots]/2003.001_001_pm.*, return the file found.
-	- If not found, searches [src_img_roots]/2003.001_001_cd.*, return the file found
-	- Raise 404 if neither are found.
-
-    YMMV: Lots of undefined behavior will result if the source images change a lot/change names a lot. 
+    Searches /source_root/ident + source_suffix, then /fallback_root/ident + fallback_suffix. 404 if neither are found.
+    
+    NB: source_suffix, fallback_suffix accept globbing patterns.
+    
     """
 	    
     def __init__(self, config):
         super(PreferredSuffixResolver, self).__init__(config)
-        self.source_roots = self.config['src_img_roots']
-        self.pref_pattern = self.config['pref_suffix']
-        self.fall_pattern = self.config['fall_suffix']
+        self.source_root = self.config['source_root']
+        self.source_suffix = self.config['source_suffix']
+        self.fallback_root = self.config['fallback_root']
+        self.fallback_suffix = self.config['fallback_suffix']
+        self.cache_root = self.config['cache_root']
         logger.debug("PreferredSuffixResolver loaded")
 
-    def all_exts(self, ident):
-        return [ident + ext for ext in ['.jpg','.jpeg', '.tif', '.tiff', '.png', '.jp2'] ] 
-	
-    def raise_404_for_ident(self, ident):
-        message = 'Source image not found for identifier: %s.' % (ident,)
-        logger.warn(message)
-        raise ResolverException(404, message)
-
-    def search_files(self,path,pattern):
+    def search_files(self,ident):
         # Glob-searches a directory path for filenames pattern, returns first match
-        found = glob.glob( join(path,pattern) )
-        if not found:
-            return None
-        else:
-            return join(path,found[0])
 
-        
+        pref = ident + self.source_suffix
+        match = glob.glob( join( self.source_root, pref ))
+        if match:
+           return match[0] 
+
+        fall = ident + self.fallback_suffix
+        match = glob.glob( join( self.fallback_root,fall ))
+        if match:
+            return match[0]
+
+        return ''
+
     def source_file_path(self, ident):
         ident = unquote(ident)
+        return self.search_files(ident)
 
-        pref = ident + self.pref_pattern
-        for directory in self.source_roots:
-            match = self.search_files(directory,pref)
-            if match:
-               return match 
+    def format_from_ident(self,ident):
+        src = self.source_file_path(unquote(ident))
+        return super(PreferredSuffixResolver, self).format_from_ident(src)
 
-        fall = ident + self.fall_pattern
-        for directory in self.source_roots:
-            match = self.search_files(directory,fall)
-            if match:
-                return match
-	
-    def is_resolvable(self, ident):
-        return not self.source_file_path(ident) is None
-	
-    def resolve(self, ident):
+    def cache_file_path(self, ident):
+        ident = unquote(ident) + '.' + self.format_from_ident(ident)
+        return join(self.cache_root, ident)
+
+    def resolve(self, app, ident, base_uri):
         if not self.is_resolvable(ident):
             self.raise_404_for_ident(ident)
+        if not self.in_cache(ident):
+            self.copy_to_cache(ident)
 
-        source_fp = self.source_file_path(ident)
-        logger.debug('src image: %s' % (source_fp))
-	
-        file_format = source_fp.split('.')[-1]
-        logger.debug('src format: %s' % (file_format,))
-
-        return (source_fp, file_format)
+        cache_fp = self.cache_file_path(ident)
+        format_ = self.format_from_ident(ident)
+        uri = self.fix_base_uri(base_uri)
+        extra = self.get_extra_info(ident, cache_fp)
+        logger.info("Cached copy sent %s",cache_fp)
+        
+        return ImageInfo(app, uri, cache_fp, format_, extra)
