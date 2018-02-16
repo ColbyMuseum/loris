@@ -1,34 +1,69 @@
 # transformers.py
 # -*- coding: utf-8 -*-
 
+from __future__ import absolute_import
+
 import multiprocessing
-from PIL import Image
-from PIL.ImageFile import Parser
-from PIL.ImageOps import mirror
 from logging import getLogger
-from loris_exception import TransformException
 from math import ceil, log
-from os import makedirs, path, unlink, devnull
-from parameters import FULL_MODE
-import cStringIO
+from os import path, unlink, devnull
 import platform
 import random
 import string
 import subprocess
-import sys
+
 try:
-    from PIL.ImageCms import profileToProfile # Pillow
+    from cStringIO import BytesIO
+except ImportError:  # Python 3
+    from io import BytesIO
+
+from PIL import Image
+from PIL.ImageFile import Parser
+from PIL.ImageOps import mirror
+
+# This import is only used for converting embedded color profiles to sRGB,
+# which is a user-configurable setting.  If they don't have this enabled,
+# the failure of this import isn't catastrophic.
+try:
+    from PIL.ImageCms import profileToProfile, PyCMSError
+    has_imagecms = True
 except ImportError:
-    from ImageCms import profileToProfile # PIL
+    has_imagecms = False
+
+from loris.loris_exception import ConfigError, TransformException
+from loris.parameters import FULL_MODE
+from loris.utils import mkdir_p
 
 logger = getLogger(__name__)
 
+
+def _validate_color_profile_conversion_config(config):
+    """
+    Validate the config for setting up color profile conversion.
+    """
+    if not config.get('map_profile_to_srgb', False):
+        return
+
+    if config['map_profile_to_srgb'] and not config.get('srgb_profile_fp'):
+        raise ConfigError(
+            'When map_profile_to_srgb=True, you need to give the path to '
+            'an sRGB color profile in the srgb_profile_fp setting.'
+        )
+
+    if config['map_profile_to_srgb'] and not has_imagecms:
+        raise ConfigError(
+            'When map_profile_to_srgb=True, you need to install Pillow with '
+            'LittleCMS support.  See http://www.littlecms.com/ for instructions.'
+        )
+
+
 class _AbstractTransformer(object):
     def __init__(self, config):
+        _validate_color_profile_conversion_config(config)
         self.config = config
         self.target_formats = config['target_formats']
         self.dither_bitonal_images = config['dither_bitonal_images']
-        logger.debug('Initialized %s.%s' % (__name__, self.__class__.__name__))
+        logger.debug('Initialized %s.%s', __name__, self.__class__.__name__)
 
     def transform(self, src_fp, target_fp, image_request):
         '''
@@ -37,8 +72,19 @@ class _AbstractTransformer(object):
             target_fp (str)
             image (ImageRequest)
         '''
-        e = self.__class__.__name__
+        cn = self.__class__.__name__
         raise NotImplementedError('transform() not implemented for %s' % (cn,))
+
+    @property
+    def map_profile_to_srgb(self):
+        return self.config.get('map_profile_to_srgb', False)
+
+    @property
+    def srgb_profile_fp(self):
+        return self.config.get('srgb_profile_fp')
+
+    def _map_im_profile_to_srgb(self, im, input_profile):
+        return profileToProfile(im, input_profile, self.srgb_profile_fp)
 
     def _derive_with_pil(self, im, target_fp, image_request, rotate=True, crop=True):
         '''
@@ -52,7 +98,7 @@ class _AbstractTransformer(object):
                 True by default; can be set to False in case the rotation was
                 done further upstream.
             crop (bool):
-                True by default; can be set to False when the region was aleady
+                True by default; can be set to False when the region was already
                 extracted further upstream.
         Returns:
             void (puts an image at target_fp)
@@ -68,18 +114,25 @@ class _AbstractTransformer(object):
                 image_request.region_param.pixel_x+image_request.region_param.pixel_w,
                 image_request.region_param.pixel_y+image_request.region_param.pixel_h
             )
-            logger.debug('cropping to: %s' % (repr(box),))
+            logger.debug('cropping to: %r', box)
             im = im.crop(box)
 
         # resize
         if image_request.size_param.canonical_uri_value != 'full':
             wh = [int(image_request.size_param.w),int(image_request.size_param.h)]
-            logger.debug('Resizing to: %s' % (repr(wh),) )
+            logger.debug('Resizing to: %r', wh)
             im = im.resize(wh, resample=Image.ANTIALIAS)
 
 
         if image_request.rotation_param.mirror:
             im = mirror(im)
+
+        try:
+            if self.map_profile_to_srgb and 'icc_profile' in im.info:
+                embedded_profile = BytesIO(im.info['icc_profile'])
+                im = self._map_im_profile_to_srgb(im, embedded_profile)
+        except PyCMSError as err:
+            logger.warn('Error converting %r to sRGB: %r', im, err)
 
         if image_request.rotation_param.rotation != '0' and rotate:
             r = 0-float(image_request.rotation_param.rotation)
@@ -88,7 +141,7 @@ class _AbstractTransformer(object):
             # transparent background (A == Alpha layer)
             if float(image_request.rotation_param.rotation) % 90 != 0.0 and \
                 image_request.format == 'png':
-                
+
                 if image_request.quality in ('gray', 'bitonal'):
                     im = im.convert('LA')
                 else:
@@ -123,24 +176,25 @@ class _AbstractTransformer(object):
         elif image_request.format == 'webp':
             # see http://pillow.readthedocs.org/en/latest/handbook/image-file-formats.html#webp
             im.save(target_fp, quality=90)
-         
+
 
 class _PillowTransformer(_AbstractTransformer):
-    def __init__(self, config):
-        super(_PillowTransformer, self).__init__(config)
-
     def transform(self, src_fp, target_fp, image_request):
         im = Image.open(src_fp)
         self._derive_with_pil(im, target_fp, image_request)
 
+
 class JPG_Transformer(_PillowTransformer):
-    def __init__(self, config): super(JPG_Transformer, self).__init__(config)
+    pass
+
 
 class TIF_Transformer(_PillowTransformer):
-    def __init__(self, config): super(TIF_Transformer, self).__init__(config)
+    pass
+
 
 class PNG_Transformer(_PillowTransformer):
-    def __init__(self, config): super(PNG_Transformer, self).__init__(config)
+    pass
+
 
 class _AbstractJP2Transformer(_AbstractTransformer):
     '''
@@ -149,27 +203,16 @@ class _AbstractJP2Transformer(_AbstractTransformer):
     Exits if OSError is raised during init.
     '''
     def __init__(self, config):
-        self.map_profile_to_srgb = bool(config['map_profile_to_srgb'])
         self.mkfifo = config['mkfifo']
         self.tmp_dp = config['tmp_dp']
 
-        if self.map_profile_to_srgb and \
-            ('PIL.ImageCms' not in sys.modules and 'ImageCms' not in sys.modules):
-            logger.warn('Could not import profileToProfile from ImageCms.')
-            logger.warn('Images will not have their embedded color profiles mapped to sSRGB.')
-            self.map_profile_to_srgb = False
-        else:
-            self.srgb_profile_fp = config['srgb_profile_fp']
-
         try:
-            if not path.exists(self.tmp_dp):
-                makedirs(self.tmp_dp)
+            mkdir_p(self.tmp_dp)
         except OSError as ose:
             # Almost certainly a permissions error on one of the required dirs
             from sys import exit
             from os import strerror
-            msg = '%s (%s)' % (strerror(ose.errno),ose.filename)
-            logger.fatal(msg)
+            logger.fatal('%s (%s)', strerror(ose.errno), ose.filename)
             logger.fatal('Exiting')
             exit(77)
 
@@ -191,7 +234,7 @@ class _AbstractJP2Transformer(_AbstractTransformer):
                     self._scale_dim(full_h,s) >= req_h])
 
     def _scales_to_reduce_arg(self, image_request):
-        # Scales from from JP2 levels, so even though these are from the tiles
+        # Scales from JP2 levels, so even though these are from the tiles
         # info.json, it's easier than using the sizes from info.json
         scales = [s for t in image_request.info.tiles for s in t['scaleFactors']]
         is_full_region = image_request.region_param.mode == FULL_MODE
@@ -227,24 +270,6 @@ class OPJ_JP2Transformer(_AbstractJP2Transformer):
         '''
         return 'lib/%s/%s' % (platform.system(),platform.machine())
 
-    @staticmethod
-    def libopenjp2_name():
-        '''Only used in dev and tests.
-        '''
-        system = platform.system()
-        if system == 'Linux':
-            return 'libopenjp2.so.2.1.0'
-        elif system == 'Darwin':
-            return 'libopenjp2.2.1.0.dylib'
-
-    @staticmethod
-    def local_libopenjp2_path():
-        '''Only used in dev and tests.
-        '''
-        dir_ = OPJ_JP2Transformer.local_libopenjp2_dir()
-        name = OPJ_JP2Transformer.libopenjp2_name()
-        return '%s/%s' % (dir_,name)
-
     def _region_to_opj_arg(self, region_param):
         '''
         Args:
@@ -259,7 +284,7 @@ class OPJ_JP2Transformer(_AbstractJP2Transformer):
             x1 = region_param.pixel_x + region_param.pixel_w
             y1 = region_param.pixel_y + region_param.pixel_h
             arg = ','.join(map(str, (x0, y0, x1, y1)))
-        logger.debug('opj region parameter: %s' % (arg,))
+        logger.debug('opj region parameter: %s', arg)
         return arg
 
     def transform(self, src_fp, target_fp, image_request):
@@ -268,7 +293,7 @@ class OPJ_JP2Transformer(_AbstractJP2Transformer):
 
         # make the named pipe
         mkfifo_call = '%s %s' % (self.mkfifo, fifo_fp)
-        logger.debug('Calling %s' % (mkfifo_call,))
+        logger.debug('Calling %s', mkfifo_call)
         resp = subprocess.check_call(mkfifo_call, shell=True)
         if resp != 0:
             logger.error('Problem with mkfifo')
@@ -284,24 +309,24 @@ class OPJ_JP2Transformer(_AbstractJP2Transformer):
 
         opj_cmd = ' '.join((self.opj_decompress,i,reg,red,o))
 
-        logger.debug('Calling: %s' % (opj_cmd,))
+        logger.debug('Calling: %s', opj_cmd)
 
         # Start the shellout. Blocks until the pipe is empty
+        # TODO: If this command hangs, the server never returns.
+        # Surely that can't be right!
         with open(devnull, 'w') as fnull:
             opj_decompress_proc = subprocess.Popen(opj_cmd, shell=True, bufsize=-1,
                 stderr=fnull, stdout=fnull, env=self.env)
 
-        f = open(fifo_fp, 'rb')
-        logger.debug('Opened %s' % fifo_fp)
-
-        # read from the named pipe
-        p = Parser()
-        while True:
-            s = f.read(1024)
-            if not s:
-                break
-            p.feed(s)
-        im = p.close() # a PIL.Image
+        with open(fifo_fp, 'rb') as f:
+            # read from the named pipe
+            p = Parser()
+            while True:
+                s = f.read(1024)
+                if not s:
+                    break
+                p.feed(s)
+            im = p.close() # a PIL.Image
 
         # finish opj
         opj_exit = opj_decompress_proc.wait()
@@ -309,9 +334,12 @@ class OPJ_JP2Transformer(_AbstractJP2Transformer):
             map(logger.error, opj_decompress_proc.stderr)
         unlink(fifo_fp)
 
-        if self.map_profile_to_srgb and image_request.info.color_profile_bytes:  # i.e. is not None
-            emb_profile = cStringIO.StringIO(image_request.info.color_profile_bytes)
-            im = profileToProfile(im, emb_profile, self.srgb_profile_fp)
+        try:
+            if self.map_profile_to_srgb and image_request.info.color_profile_bytes:  # i.e. is not None
+                emb_profile = BytesIO(image_request.info.color_profile_bytes)
+                im = self._map_im_profile_to_srgb(im, emb_profile)
+        except PyCMSError as err:
+            logger.warn('Error converting %r to sRGB: %r', im, err)
 
         self._derive_with_pil(im, target_fp, image_request, crop=False)
 
@@ -339,24 +367,6 @@ class KakaduJP2Transformer(_AbstractJP2Transformer):
         '''
         return 'lib/%s/%s' % (platform.system(),platform.machine())
 
-    @staticmethod
-    def libkdu_name():
-        '''Only used in dev and tests.
-        '''
-        system = platform.system()
-        if system == 'Linux':
-            return 'libkdu_v74R.so'
-        elif system == 'Darwin':
-            return 'libkdu_v73R.dylib'
-
-    @staticmethod
-    def local_libkdu_path():
-        '''Only used in dev and tests.
-        '''
-        dir_ = KakaduJP2Transformer.local_libkdu_dir()
-        name = KakaduJP2Transformer.libkdu_name()
-        return '%s/%s' % (dir_,name)
-
     def _region_to_kdu_arg(self, region_param):
         '''
         Args:
@@ -372,7 +382,7 @@ class KakaduJP2Transformer(_AbstractJP2Transformer):
             width = region_param.decimal_w
 
             arg = '\{%s,%s\},\{%s,%s\}' % (top, left, height, width)
-        logger.debug('kdu region parameter: %s' % (arg,))
+        logger.debug('kdu region parameter: %s', arg)
         return arg
 
     def _run_transform(self, target_fp, image_request, kdu_cmd, fifo_fp):
@@ -380,26 +390,28 @@ class KakaduJP2Transformer(_AbstractJP2Transformer):
             # Start the kdu shellout. Blocks until the pipe is empty
             kdu_expand_proc = subprocess.Popen(kdu_cmd, shell=True, bufsize=-1,
                 stderr=subprocess.PIPE, env=self.env)
-            f = open(fifo_fp, 'rb')
-
-            # read from the named pipe
-            p = Parser()
-            while True:
-                s = f.read(1024)
-                if not s:
-                    break
-                p.feed(s)
-            im = p.close() # a PIL.Image
+            with open(fifo_fp, 'rb') as f:
+                # read from the named pipe
+                p = Parser()
+                while True:
+                    s = f.read(1024)
+                    if not s:
+                        break
+                    p.feed(s)
+                im = p.close() # a PIL.Image
         finally:
-            stdoutdata, stderrdata = kdu_expand_proc.communicate()
+            _, stderrdata = kdu_expand_proc.communicate()
             kdu_exit = kdu_expand_proc.returncode
             if kdu_exit != 0:
                 map(logger.error, stderrdata)
             unlink(fifo_fp)
 
-        if self.map_profile_to_srgb and image_request.info.color_profile_bytes:  # i.e. is not None
-            emb_profile = cStringIO.StringIO(image_request.info.color_profile_bytes)
-            im = profileToProfile(im, emb_profile, self.srgb_profile_fp)
+        try:
+            if self.map_profile_to_srgb and image_request.info.color_profile_bytes:  # i.e. is not None
+                emb_profile = BytesIO(image_request.info.color_profile_bytes)
+                im = self._map_im_profile_to_srgb(im, emb_profile)
+        except PyCMSError as err:
+            logger.warn('Error converting %r to sRGB: %r', im, err)
 
         self._derive_with_pil(im, target_fp, image_request, crop=False)
 
@@ -424,7 +436,7 @@ class KakaduJP2Transformer(_AbstractJP2Transformer):
         process.start()
         process.join(self.transform_timeout)
         if process.is_alive():
-            logger.info('terminating process for %s, %s' % (src_fp, target_fp))
+            logger.info('terminating process for %s, %s', src_fp, target_fp)
             process.terminate()
             if path.exists(fifo_fp):
                 unlink(fifo_fp)

@@ -1,20 +1,21 @@
 # img.py
 #-*-coding:utf-8-*-
 
+from __future__ import absolute_import
+
 from datetime import datetime
-from errno import EEXIST
+import errno
 from logging import getLogger
-from loris_exception import LorisException
-from os import path, sep, symlink, makedirs, unlink, error as os_error
-from parameters import RegionParameter
-from parameters import RotationParameter
-from parameters import SizeParameter
-from loris_exception import RequestException
-from loris_exception import SyntaxException
-from loris_exception import ImageException
-from urllib import unquote, quote_plus
-from werkzeug.http import generate_etag
-from urllib import unquote
+from os import path
+
+try:
+    from urllib.parse import quote_plus, unquote
+except ImportError:  # Python 2
+    from urllib import quote_plus, unquote
+
+from loris.loris_exception import ImageException
+from loris.parameters import RegionParameter, RotationParameter, SizeParameter
+from loris.utils import mkdir_p, safe_rename, symlink
 
 logger = getLogger(__name__)
 
@@ -85,11 +86,11 @@ class ImageRequest(object):
         self.quality = quality
         self.format = target_format
 
-        logger.debug('region slice: %s' % (str(region),))
-        logger.debug('size slice: %s' % (str(size),))
-        logger.debug('rotation slice: %s' % (str(rotation),))
-        logger.debug('quality slice: %s' % (self.quality,))
-        logger.debug('format extension: %s' % (self.format,))
+        logger.debug('region slice: %s', region)
+        logger.debug('size slice: %s', size)
+        logger.debug('rotation slice: %s', rotation)
+        logger.debug('quality slice: %s', self.quality)
+        logger.debug('format extension: %s', self.format)
 
         # These aren't set until we first access them
         self._canonical_cache_path = None
@@ -111,28 +112,19 @@ class ImageRequest(object):
     @property
     def region_param(self):
         if self._region_param is None:
-            try:
-                self._region_param = RegionParameter(self.region_value, self.info)
-            except (SyntaxException,RequestException):
-                raise
+            self._region_param = RegionParameter(self.region_value, self.info)
         return self._region_param
 
     @property
     def size_param(self):
         if self._size_param is None:
-            try:
-                self._size_param = SizeParameter(self.size_value, self.region_param)
-            except (RequestException,SyntaxException):
-                raise
+            self._size_param = SizeParameter(self.size_value, self.region_param)
         return self._size_param
 
     @property
     def rotation_param(self):
         if self._rotation_param is None:
-            try:
-                self._rotation_param = RotationParameter(self.rotation_value)
-            except (RotationParameter,SyntaxException):
-                raise
+            self._rotation_param = RotationParameter(self.rotation_value)
         return self._rotation_param
 
     @property
@@ -188,14 +180,14 @@ class ImageRequest(object):
     @property
     def is_canonical(self):
         if self._is_canonical is None:
-            self._is_canonical = self.as_path == self.canonical_as_path
+            self._is_canonical = (self.as_path == self.canonical_as_path)
         return self._is_canonical
 
     @property
     def info(self):
         if self._info is None:
             # For dev purposes only. This should never happen.
-            raise ImageException(http_status=500, message='Image.info not set!')
+            raise ImageException('Image.info not set!')
         else:
             return self._info
 
@@ -224,23 +216,15 @@ class ImageCache(dict):
         return path.exists(self.get_request_cache_path(image_request))
 
     def __getitem__(self, image_request):
-        fp = self.get(image_request)
-        if fp is None:
-            raise KeyError
-        return fp
-
-    @staticmethod
-    def _link(source, link_name):
-        if source == link_name:
-            logger.warn('Circular symlink requested from %s to %s; not creating symlink' % (link_name, source))
-            return
-        link_dp = path.dirname(link_name)
-        if not path.exists(link_dp):
-            makedirs(link_dp)
-        if path.lexists(link_name): # shouldn't be the case, but helps debugging
-            unlink(link_name)
-        symlink(source, link_name)
-        logger.debug('Made symlink from %s to %s' % (link_name, source))
+        try:
+            cache_fp = self.get_request_cache_path(image_request)
+            last_mod = datetime.utcfromtimestamp(path.getmtime(cache_fp))
+            return (cache_fp, last_mod)
+        except OSError as err:
+            if err.errno == errno.ENOENT:
+                raise KeyError(image_request)
+            else:
+                raise
 
     def __setitem__(self, image_request, canonical_fp):
         # Because we're working with files, it's more practical to put derived
@@ -259,7 +243,7 @@ class ImageCache(dict):
         # transformer.
         if not image_request.is_canonical:
             requested_fp = self.get_request_cache_path(image_request)
-            ImageCache._link(canonical_fp, requested_fp)
+            symlink(src=canonical_fp, dst=requested_fp)
 
     def __delitem__(self, image_request):
         # if we ever decide to start cleaning our own cache...
@@ -269,11 +253,9 @@ class ImageCache(dict):
         '''Returns (str, ):
             The path to the file or None if the file does not exist.
         '''
-        cache_fp = self.get_request_cache_path(image_request)
-        last_mod = datetime.utcfromtimestamp(path.getmtime(cache_fp))
-        if path.exists(cache_fp):
-            return (cache_fp, last_mod)
-        else:
+        try:
+            return self[image_request]
+        except KeyError:
             return None
 
     def get_request_cache_path(self, image_request):
@@ -287,11 +269,10 @@ class ImageCache(dict):
     def create_dir_and_return_file_path(self, image_request):
         target_fp = self.get_canonical_cache_path(image_request)
         target_dp = path.dirname(target_fp)
-        try:
-            makedirs(target_dp)
-        except os_error as ose:
-            if ose.errno == EEXIST:
-                pass
-            else:
-                raise
+        mkdir_p(target_dp)
+        return target_fp
+
+    def upsert(self, image_request, temp_fp):
+        target_fp = self.create_dir_and_return_file_path(image_request)
+        safe_rename(temp_fp, target_fp)
         return target_fp

@@ -1,8 +1,11 @@
-from .abstract_resolver import AbstractResolverTest
-from loris import resolver
+from __future__ import absolute_import
+
 import os
 import shutil
 import unittest
+
+from tests.abstract_resolver import AbstractResolverTest
+from loris import resolver
 
 
 class SourceImageCachingResolverTest(AbstractResolverTest, unittest.TestCase):
@@ -36,15 +39,3 @@ class SourceImageCachingResolverTest(AbstractResolverTest, unittest.TestCase):
         # Clean Up the cache directory
         if os.path.exists(self.cache_dir):
             shutil.rmtree(self.cache_dir)
-
-
-def suite():
-    test_suites = []
-    test_suites.append(
-            unittest.makeSuite(SourceImageCachingResolverTest, 'test')
-    )
-    return unittest.TestSuite(test_suites)
-
-
-if __name__ == '__main__':
-        unittest.main()
