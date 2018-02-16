@@ -7,7 +7,6 @@
 from __future__ import absolute_import
 
 from logging import getLogger
-from loris_exception import ResolverException
 from os.path import join, exists, dirname
 from os import makedirs, rename, remove, listdir
 from shutil import copy
