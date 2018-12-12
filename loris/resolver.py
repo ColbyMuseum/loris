@@ -598,6 +598,56 @@ class SourceImageCachingResolver(_AbstractResolver):
         extra = self.get_extra_info(ident, cache_fp)
         return ImageInfo(app, uri, cache_fp, format_, extra)
 
+class SuffixingSourceImageCachingResolver(SourceImageCachingResolver):
+
+    def __init__(self, config):
+
+        super(SuffixingSourceImageCachingResolver, self).__init__(config)
+       
+        if 'source_suffix' in self.config:
+            self.suffix = self.config['source_suffix']
+        else:
+            self.suffix = ''
+
+        logger.debug('SuffixingSourceImageCachingResolver loaded')
+
+    def is_resolvable(self, ident):
+        logger.debug("Suffixer.is_resolvable got ident %s",ident)
+        ident = ident + self.suffix
+        return super(SuffixingSourceImageCachingResolver, self).is_resolvable(ident)
+
+    def source_file_path(self, ident):
+
+        logger.debug("Suffixer.source_file_path got ident %s",ident)
+
+        ident = ident + self.suffix
+        return super(SuffixingSourceImageCachingResolver, self).source_file_path(ident)
+
+    def cache_file_path(self, ident):
+
+        ident = ident + self.suffix
+        return super(SuffixingSourceImageCachingResolver, self).cache_file_path(ident)
+
+    def in_cache(self, ident):
+
+        ident = ident + self.suffix
+        return super(SuffixingSourceImageCachingResolver, self).in_cache(ident)
+
+    def copy_to_cache(self, ident):
+
+        ident = ident + self.suffix
+        super(SuffixingSourceImageCachingResolver, self).copy_to_cache(ident)
+
+    def raise_404_for_ident(self, ident):
+        
+        ident = ident + self.suffix
+        super(SuffixingSourceImageCachingResolver, self).raise_404_for_ident(ident)
+
+    def resolve(self, app, ident, base_uri):
+
+        ident = ident + self.suffix
+        return super(SuffixingSourceImageCachingResolver, self).resolve(app, ident, base_uri)
+
 class PreferredSuffixResolver(SourceImageCachingResolver):
     """
     Subclass of SourceImageCachingResolver that checks multiple source dirs for files with a preferred and fallback suffix.
