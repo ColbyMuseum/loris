@@ -2,7 +2,7 @@
 from __future__ import absolute_import
 
 import unittest
-import operator, itertools
+import operator
 
 import pytest
 
@@ -80,8 +80,8 @@ class Test_AbstractTransformer(object):
             'dither_bitonal_images': '',
         })
         with pytest.raises(NotImplementedError) as err:
-            e.transform(src_fp=None, target_fp=None, image_request=None)
-        assert err.value.message == 'transform() not implemented for ExampleTransformer'
+            e.transform(target_fp=None, image_request=None, image_info=None)
+        assert str(err.value) == 'transform() not implemented for ExampleTransformer'
 
     @pytest.mark.parametrize('config', [
         {'map_profile_to_srgb': True},
@@ -91,7 +91,7 @@ class Test_AbstractTransformer(object):
     def test_bad_srgb_profile_fp_is_configerror(self, config):
         with pytest.raises(ConfigError) as err:
             ExampleTransformer(config=config)
-        assert 'you need to give the path to an sRGB color profile' in err.value.message
+        assert 'you need to give the path to an sRGB color profile' in str(err.value)
 
     def test_missing_littlecms_with_srgb_conversion_is_configerror(self):
         try:
@@ -103,7 +103,7 @@ class Test_AbstractTransformer(object):
                 })
         finally:
             transforms.has_imagecms = True
-        assert 'you need to install Pillow with LittleCMS support' in err.value.message
+        assert 'you need to install Pillow with LittleCMS support' in str(err.value)
 
 
 class UnitTest_KakaduJP2Transformer(unittest.TestCase):
@@ -178,7 +178,6 @@ class Test_PILTransformer(loris_t.LorisTest,
         request_path = '/%s/full/full/%s/default.png' % (ident,rotate)
         image = self.request_image_from_client(request_path)
 
-        # Get the alpha channel as an itertools.imap
         alpha = self.get_alpha_channel(image)
 
         # Instantiate transparency as False
@@ -208,7 +207,7 @@ class Test_PILTransformer(loris_t.LorisTest,
             return None # no alpha channel, presumably
 
         alpha_getter= operator.itemgetter(alpha_index)
-        return itertools.imap(alpha_getter, image.getdata())
+        return map(alpha_getter, image.getdata())
 
     def test_can_edit_embedded_color_profile(self):
         self._assert_can_edit_embedded_color_profile(
@@ -296,7 +295,7 @@ class Test_PILTransformer(loris_t.LorisTest,
         ident = self.test_jpeg_id
         request_path = '/%s/full/full/0/default.tif' % ident
         image = self.request_image_from_client(request_path)
-        assert image.format == 'TIF'
+        assert image.format == 'TIFF'
 
     def test_convert_to_bitonal_with_rotation_is_mode_LA(self):
         request_path = '/%s/full/full/45/bitonal.png' % self.ident
@@ -312,3 +311,17 @@ class Test_PILTransformer(loris_t.LorisTest,
         request_path = '/%s/full/full/0/gray.jpg' % self.test_jpeg_id
         image = self.request_image_from_client(request_path)
         assert image.mode == 'L'
+
+    def test_jpeg_encoded_tif_can_be_retrieved(self):
+        # This checks an issue with Pillow where attempting to load
+        # JPEG-compressed TIFFs.  The test file is taken from the test case
+        # described in https://github.com/python-pillow/Pillow/issues/2926.
+        #
+        # See https://github.com/loris-imageserver/loris/issues/405
+        request_path = '/ycbcr-jpeg.tiff/full/full/0/default.jpg'
+        image = self.request_image_from_client(request_path)
+
+    def test_can_transform_transparent_png_as_nontransparent_format(self):
+        ident = 'png_with_transparency.png'
+        request_path = '/%s/full/full/0/default.jpg' % ident
+        self.request_image_from_client(request_path)
