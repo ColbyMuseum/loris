@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # setup.py
+
+from __future__ import print_function
+
 from grp import getgrnam
 from pwd import getpwnam
 from setuptools import setup
@@ -55,13 +58,10 @@ USER_HELP = 'User that will own the application and has permission to write to c
 GROUP_DEFAULT = 'loris'
 GROUP_HELP = 'Group that will own the application and has permission to write to caches. [Default: %s]' % (USER_DEFAULT,)
 
-DEPENDENCIES = [
-    # (package, version, module)
-    ('werkzeug', '>=0.8.3', 'werkzeug'),
-    ('pillow', '>=2.4.0', 'PIL'),
-    ('configobj', '>=4.7.2,<=5.0.0', 'configobj'),
-    ('requests', '>=2.12.0', 'requests'),
-]
+
+def local_file(name):
+    return os.path.relpath(os.path.join(os.path.dirname(__file__), name))
+
 
 class LorisInstallCommand(install):
     description = 'Installs Loris image server'
@@ -142,22 +142,25 @@ Please create this user, e.g.:
             self.log_dir,
             self.config_dir
         ]
-        map(self.__init_dir, loris_directories)
+        for d in loris_directories:
+            self.__init_dir(d)
 
     def __init_dir(self, d):
         # Could do something here to warn if dir exists but permissions or
         # ownership aren't sufficient.
         if not os.path.exists(d):
             os.makedirs(d)
-            stdout.write('Created %s\n' % (d,))
+            print('Created %s' % d)
             os.chown(d, self.loris_owner_id, self.loris_group_id)
-            stdout.write('Changed ownership of %s to %s:%s\n' %
-                (d,self.loris_owner,self.loris_group))
+            print(
+                'Changed ownership of %s to %s:%s' %
+                (d, self.loris_owner, self.loris_group)
+            )
 
         s = os.stat(d)
         permissions = oct(stat.S_IMODE(s.st_mode))
-        if permissions != oct(0755):
-            os.chmod(d, 0755)
+        if permissions != oct(0o755):
+            os.chmod(d, 0o755)
             stdout.write('Set permissions for %s to 0755\n' % (d,))
 
     def __write_wsgi(self):
@@ -170,9 +173,10 @@ from loris.webapp import create_app
 # site.addsitedir('/path/to/my/virtualenv/lib/python2.x/site-packages')
 application = create_app(config_file_path='%s')
 ''' % (config_file_path,)
+
         with open(wsgi_file_path, 'w') as f:
             f.write(content)
-        os.chmod(wsgi_file_path, 0755)
+        os.chmod(wsgi_file_path, 0o755)
         os.chown(wsgi_file_path, self.loris_owner_id, self.loris_group_id)
     @property
     def __here(self):
@@ -189,7 +193,7 @@ application = create_app(config_file_path='%s')
         shutil.copyfile(index_src, index_target)
         shutil.copyfile(favicon_src, favicon_target)
         for f in (index_target, favicon_target):
-            os.chmod(f, 0644)
+            os.chmod(f, 0o644)
             os.chown(f, self.loris_owner_id, self.loris_group_id)
 
     def __update_and_deploy_config(self):
@@ -214,15 +218,17 @@ application = create_app(config_file_path='%s')
         config.filename = config_file_target
         config.write()
 
-install_requires = []
-for d in DEPENDENCIES:
-    try:
-        __import__(d[2], fromlist=[''])
-    except ImportError:
-        install_requires.append(''.join(d[0:2]))
+
+# We use requirements.txt so we can provide a deterministic set of packages
+# to be installed, not the latest version that happens to be available.
+# e.g. Pillow 5 has some issues with TIFF files that we care about.
+with open('requirements.txt') as f:
+    install_requires = list(f)
+
 
 def _read(fname):
-    return open(os.path.join(os.path.dirname(__file__), fname)).read()
+    return open(local_file(fname)).read()
+
 
 setup(
     cmdclass={ 'install' : LorisInstallCommand },
@@ -235,7 +241,7 @@ setup(
     license='Simplified BSD',
     version=VERSION,
     packages=['loris'],
-    install_requires=install_requires
+    install_requires=install_requires,
 )
 
 

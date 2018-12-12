@@ -47,7 +47,7 @@ class InfoUnit(loris_t.LorisTest):
         uri = self.test_jp2_color_uri
 
         profile = ["http://iiif.io/api/image/2/level2.json", {
-                "formats": [ "jpg", "png", "gif", "webp" ],
+                "formats": [ "jpg", "png", "gif", "webp", "tif" ],
                 "qualities": [
                     "default",
                     "bitonal",
@@ -122,7 +122,7 @@ class InfoUnit(loris_t.LorisTest):
         uri = self.test_jp2_gray_uri
 
         profile = ["http://iiif.io/api/image/2/level2.json", {
-            "formats": [ "jpg", "png", "gif", "webp" ],
+            "formats": [ "jpg", "png", "gif", "webp", "tif" ],
             "qualities": [
                 "default",
                 "bitonal",
@@ -157,7 +157,7 @@ class InfoUnit(loris_t.LorisTest):
         uri = '%s/%s' % (self.URI_BASE, ident)
         with self.assertRaises(loris_exception.ImageInfoException) as cm:
             img_info.ImageInfo(self.app, uri, fp, fmt)
-        self.assertEqual(cm.exception.message, 'Invalid JP2 file')
+        self.assertEqual(str(cm.exception), 'Invalid JP2 file')
 
     def test_info_from_invalid_src_format(self):
         fp = path.join(self.test_img_dir, '01', '03', '0001.jpg')
@@ -167,7 +167,7 @@ class InfoUnit(loris_t.LorisTest):
         error_message = "Didn\'t get a source format, or at least one we recognize ('invalid_format')."
         with self.assertRaises(loris_exception.ImageInfoException) as cm:
             img_info.ImageInfo(self.app, uri, fp, fmt)
-        self.assertEqual(cm.exception.message, error_message)
+        self.assertEqual(str(cm.exception), error_message)
 
     def test_jpeg_info_from_image(self):
         fp = self.test_jpeg_fp
@@ -178,7 +178,7 @@ class InfoUnit(loris_t.LorisTest):
         info = img_info.ImageInfo(self.app, uri, fp, fmt)
 
         profile = ["http://iiif.io/api/image/2/level2.json", {
-                "formats": [ "jpg", "png", "gif", "webp" ],
+                "formats": [ "jpg", "png", "gif", "webp", "tif" ],
                 "qualities": [ "default", "color", "gray", "bitonal" ],
                 "supports": [
                     "canonicalLinkHeader",
@@ -208,7 +208,7 @@ class InfoUnit(loris_t.LorisTest):
         info = img_info.ImageInfo(self.app, uri, fp, fmt)
 
         profile = ["http://iiif.io/api/image/2/level2.json", {
-                "formats": [ "jpg", "png", "gif", "webp" ],
+                "formats": [ "jpg", "png", "gif", "webp", "tif" ],
                 "qualities": [ "default", "gray", "bitonal" ],
                 "supports": [
                     "canonicalLinkHeader",
@@ -239,7 +239,7 @@ class InfoUnit(loris_t.LorisTest):
         info = img_info.ImageInfo(self.app, uri, fp, fmt)
 
         profile = ["http://iiif.io/api/image/2/level2.json", {
-                "formats": [ "jpg", "png", "gif", "webp" ],
+                "formats": [ "jpg", "png", "gif", "webp", "tif" ],
                 "qualities": [ "default", "color", "gray", "bitonal" ],
                 "supports": [
                     "canonicalLinkHeader",
@@ -325,7 +325,7 @@ class TestImageInfo(object):
     def test_invalid_extra_info_is_imageinfoexception(self):
         with pytest.raises(ImageInfoException) as exc:
             ImageInfo(extra={'extraInfo': {'foo': 'bar', 'baz': 'bat'}})
-        assert 'Invalid parameters in extraInfo' in exc.value.message
+        assert 'Invalid parameters in extraInfo' in str(exc.value)
 
     @pytest.mark.parametrize('src_format', ['', None, 'imgX'])
     def test_invalid_src_format_is_error(self, src_format):
@@ -353,7 +353,7 @@ class TestImageInfo(object):
     def test_profile_from_json_two_arg_profile(self):
         compliance_uri = 'http://iiif.io/api/image/2/level2.json'
         description = {
-            'formats': ['jpg', 'png', 'gif', 'webp'],
+            'formats': ['jpg', 'png', 'gif', 'webp', 'tif'],
             'qualities': ['default', 'bitonal', 'gray', 'color'],
             'supports': [
                 'canonicalLinkHeader',
@@ -427,7 +427,7 @@ class InfoFunctional(loris_t.LorisTest):
             f.write(resp.data)
 
         profile = ["http://iiif.io/api/image/2/level2.json", {
-                "formats": [ "jpg", "png", "gif", "webp" ],
+                "formats": [ "jpg", "png", "gif", "webp", "tif" ],
                 "qualities": [ "default", "bitonal", "gray", "color" ],
                 "supports": [
                     "canonicalLinkHeader",
